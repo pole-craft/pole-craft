@@ -251,7 +251,9 @@ def test_bad_slot_count_is_rejected(slots, changed, problems_of) -> None:
 
 
 def test_smallest_slot_and_pole_counts_are_accepted(changed) -> None:
-    design = design_from_dict(changed("slots", 3, "poles", 2))
+    design = design_from_dict(
+        changed("slots", 3, "poles", 2, "geometry.stator.tooth_tip_taper_mm", 0)
+    )
     assert (design.slots, design.poles) == (3, 2)
 
 

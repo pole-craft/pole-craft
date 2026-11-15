@@ -15,7 +15,19 @@ from __future__ import annotations
 import math
 from dataclasses import dataclass
 
+from polecraft.core.geometry import (
+    CoilSide,
+    Geometry,
+    Magnetisation,
+    Region,
+    closed_loop,
+    ring_sector,
+)
+from polecraft.core.winding import Coil, concentrated_winding
+from polecraft.machines.base import Machine
 from polecraft.validation import Problem, Section
+
+MM = 1e-3  # design files are in millimetres, geometry in metres
 
 MAGNETISATIONS = ("parallel", "radial")
 
@@ -38,7 +50,7 @@ class MagnetShape:
 @dataclass(frozen=True)
 class Stator:
     tooth_width_mm: float  # parallel-sided tooth body
-    slot_opening_mm: float  # gap between neighbouring tooth tips at the air gap
+    slot_opening_mm: float  # straight-line gap between tooth tips at the air-gap surface
     tooth_tip_height_mm: float  # radial height of the tip edge at the opening
     tooth_tip_taper_mm: float  # radial height of the sloped underside; 0 for a square tip
     slot_depth_mm: float  # radial, from where the tip meets the tooth to the slot bottom
@@ -215,4 +227,236 @@ class QddOuterParameters:
                 )
             ]
 
+        # The sloped underside of the tip is a straight line from the tip
+        # corner to the tooth corner at the slot top. If the tip overhangs far
+        # and the taper is shallow, that line dips below the slot-top circle
+        # and into the coil. It stays clear when r_tip cos(overhang) >= r_top.
+        taper = stator.tooth_tip_taper_mm
+        tip_radius = self.stator_outer_radius_mm - stator.tooth_tip_height_mm
+        edge = half_pitch - math.asin(
+            stator.slot_opening_mm / (2 * self.stator_outer_radius_mm)
+        )
+        overhang = edge - flank
+        if 0 < taper and tip_radius * math.cos(overhang) < self.slot_top_radius_mm:
+            needed = tip_radius * (1 - math.cos(overhang))
+            return [
+                Problem(
+                    "stator.tooth_tip_taper_mm",
+                    f"{taper:g} mm is too shallow for a tip that overhangs this far: "
+                    f"its underside would cut into the slot. Use about {needed:.3g} mm "
+                    f"or more, or 0 for a square tip",
+                )
+            ]
+
         return []
+
+
+class QddOuter(Machine):
+    """Outer-rotor surface-magnet machine with a coil on every tooth.
+
+    The stator is built tooth by tooth and the rotor pole by pole, each in its
+    own frame. Tooth 0 is centred on the x axis. At rotor angle 0, magnet 0 is
+    centred on the x axis too and is magnetised away from the machine axis.
+
+    The air gap is three layers of equal thickness: one fixed to the stator,
+    one fixed to the rotor, and between them the band that is reconnected as
+    the rotor turns. The slice of the stator is cut along slot centre lines
+    and that of the rotor between magnets, so no tooth, coil or magnet is cut.
+    """
+
+    Parameters = QddOuterParameters
+
+    def build_geometry(self, full: bool = False) -> Geometry:
+        """Regions of the smallest repeating slice, or of the whole machine."""
+        design = self.design
+        dims: QddOuterParameters = design.geometry
+        part = self.symmetry()
+        coils = concentrated_winding(design.slots, design.poles)
+
+        teeth = design.slots if full else part.slots
+        poles = design.poles if full else part.poles
+        stator = [region for k in range(teeth) for region in self._tooth_unit(coils[k])]
+        rotor = [region for j in range(poles) for region in self._pole_unit(j)]
+
+        layer = dims.air_gap_mm * MM / 3
+        return Geometry(
+            stator=tuple(stator),
+            rotor=tuple(rotor),
+            inner_radius=dims.bore_radius_mm * MM,
+            outer_radius=dims.rotor_outer_radius_mm * MM,
+            band_inner_radius=dims.stator_outer_radius_mm * MM + layer,
+            band_outer_radius=dims.magnet_inner_radius_mm * MM - layer,
+            stator_start_angle=-math.pi / design.slots,
+            rotor_start_angle=-math.pi / design.poles,
+            angle=2 * math.pi if full else 2 * math.pi / part.periods,
+            antiperiodic=part.antiperiodic and not full,
+            stack_length=design.axial.stack_length_mm * MM,
+        )
+
+    def _tooth_unit(self, coil: Coil) -> list[Region]:
+        """One slot pitch of the stator: a tooth, half a slot each side, yoke and air."""
+        design = self.design
+        dims: QddOuterParameters = design.geometry
+        steel, copper = design.steel.stator, design.winding.conductor
+        k = coil.tooth
+
+        half_pitch = math.pi / design.slots
+        centre = 2 * k * half_pitch
+        # Written as odd multiples of the half pitch so that neighbouring
+        # units compute exactly the same edge.
+        low, high = (2 * k - 1) * half_pitch, (2 * k + 1) * half_pitch
+
+        bore = dims.bore_radius_mm * MM
+        bottom = dims.slot_bottom_radius_mm * MM
+        top = dims.slot_top_radius_mm * MM
+        surface = dims.stator_outer_radius_mm * MM
+        tip = surface - dims.stator.tooth_tip_height_mm * MM
+        gap_layer = surface + dims.air_gap_mm * MM / 3
+        half_width = dims.stator.tooth_width_mm * MM / 2
+
+        # Angle of the tooth flank from the tooth axis at the slot bottom and top.
+        flank_bottom = math.asin(half_width / bottom)
+        flank_top = math.asin(half_width / top)
+        # Angle of the tip edge: half a pitch less half the slot opening.
+        edge = half_pitch - math.asin(dims.stator.slot_opening_mm * MM / (2 * surface))
+
+        # With no taper the underside of the tip is an arc at the slot top.
+        square_tip = dims.stator.tooth_tip_taper_mm == 0
+        under = "cw" if square_tip else "line"
+
+        tooth = closed_loop(
+            [
+                (bottom, centre - flank_bottom, "line"),
+                (top, centre - flank_top, under),
+                (tip, centre - edge, "line"),
+                (surface, centre - edge, "ccw"),
+                (surface, centre + edge, "line"),
+                (tip, centre + edge, under),
+                (top, centre + flank_top, "line"),
+                (bottom, centre + flank_bottom, "cw"),
+            ]
+        )
+
+        # The coil sides fill the slot from its bottom to where the tip begins.
+        # A square tip puts a corner of the slot air on the coil's top arc.
+        tip_corner_ccw = [(top, centre + edge, "ccw")] if square_tip else []
+        tip_corner_cw = [(top, centre - edge, "ccw")] if square_tip else []
+        coil_ccw = closed_loop(
+            [(bottom, centre + flank_bottom, "line"), (top, centre + flank_top, "ccw")]
+            + tip_corner_ccw
+            + [(top, high, "line"), (bottom, high, "cw")]
+        )
+        coil_cw = closed_loop(
+            [(bottom, low, "line"), (top, low, "ccw")]
+            + tip_corner_cw
+            + [(top, centre - flank_top, "line"), (bottom, centre - flank_bottom, "cw")]
+        )
+
+        # Air under the tip and in the slot opening.
+        if square_tip:
+            air_ccw = closed_loop(
+                [
+                    (top, centre + edge, "line"),
+                    (surface, centre + edge, "ccw"),
+                    (surface, high, "line"),
+                    (top, high, "cw"),
+                ]
+            )
+            air_cw = closed_loop(
+                [
+                    (top, low, "line"),
+                    (surface, low, "ccw"),
+                    (surface, centre - edge, "line"),
+                    (top, centre - edge, "cw"),
+                ]
+            )
+        else:
+            air_ccw = closed_loop(
+                [
+                    (top, centre + flank_top, "line"),
+                    (tip, centre + edge, "line"),
+                    (surface, centre + edge, "ccw"),
+                    (surface, high, "line"),
+                    (top, high, "cw"),
+                ]
+            )
+            air_cw = closed_loop(
+                [
+                    (top, low, "line"),
+                    (surface, low, "ccw"),
+                    (surface, centre - edge, "line"),
+                    (tip, centre - edge, "line"),
+                    (top, centre - flank_top, "cw"),
+                ]
+            )
+
+        yoke = ring_sector(
+            bore, bottom, low, high,
+            outer_breaks=(centre - flank_bottom, centre + flank_bottom),
+        )
+        gap = ring_sector(
+            surface, gap_layer, low, high, inner_breaks=(centre - edge, centre + edge)
+        )
+
+        # Positive current in a +1 coil comes out of the plane on the
+        # counter-clockwise side of its tooth and returns on the other side.
+        turns = design.winding.turns_per_coil
+        side_ccw = CoilSide(coil.phase, k, coil.direction, turns)
+        side_cw = CoilSide(coil.phase, k, -coil.direction, turns)
+
+        return [
+            Region(f"stator_yoke_{k}", "steel", "stator_yoke", steel, yoke),
+            Region(f"tooth_{k}", "steel", "tooth", steel, tooth),
+            Region(f"coil_{k}_cw", "coil", "coil", copper, coil_cw, coil_side=side_cw),
+            Region(f"coil_{k}_ccw", "coil", "coil", copper, coil_ccw, coil_side=side_ccw),
+            Region(f"slot_air_{k}_cw", "air", "slot_air", "air", air_cw),
+            Region(f"slot_air_{k}_ccw", "air", "slot_air", "air", air_ccw),
+            Region(f"gap_stator_{k}", "air", "air_gap", "air", gap),
+        ]
+
+    def _pole_unit(self, j: int) -> list[Region]:
+        """One pole pitch of the rotor: a magnet, the air beside it, yoke and air."""
+        design = self.design
+        dims: QddOuterParameters = design.geometry
+
+        half_pitch = math.pi / design.poles
+        centre = 2 * j * half_pitch
+        low, high = (2 * j - 1) * half_pitch, (2 * j + 1) * half_pitch
+
+        outer = dims.rotor_outer_radius_mm * MM
+        magnet_outer = dims.magnet_outer_radius_mm * MM
+        magnet_inner = dims.magnet_inner_radius_mm * MM
+        gap_layer = magnet_inner - dims.air_gap_mm * MM / 3
+
+        # Magnets alternate: even ones point away from the axis, odd ones towards it.
+        magnetisation = Magnetisation(
+            dims.magnet.magnetisation, centre, 1 if j % 2 == 0 else -1
+        )
+        material = design.magnet.material
+
+        if dims.magnet.arc_fraction == 1:
+            # A full ring of magnets: no air between them.
+            magnet = ring_sector(magnet_inner, magnet_outer, low, high)
+            regions = [
+                Region(f"magnet_{j}", "magnet", "magnet", material, magnet, magnetisation)
+            ]
+            corners: tuple[float, ...] = ()
+        else:
+            half_magnet = dims.magnet.arc_fraction * half_pitch
+            start, end = centre - half_magnet, centre + half_magnet
+            magnet = ring_sector(magnet_inner, magnet_outer, start, end)
+            air_cw = ring_sector(magnet_inner, magnet_outer, low, start)
+            air_ccw = ring_sector(magnet_inner, magnet_outer, end, high)
+            regions = [
+                Region(f"magnet_{j}", "magnet", "magnet", material, magnet, magnetisation),
+                Region(f"magnet_gap_{j}_cw", "air", "magnet_gap", "air", air_cw),
+                Region(f"magnet_gap_{j}_ccw", "air", "magnet_gap", "air", air_ccw),
+            ]
+            corners = (start, end)
+
+        yoke = ring_sector(magnet_outer, outer, low, high, inner_breaks=corners)
+        gap = ring_sector(gap_layer, magnet_inner, low, high, outer_breaks=corners)
+        return regions + [
+            Region(f"rotor_yoke_{j}", "steel", "rotor_yoke", design.steel.rotor, yoke),
+            Region(f"gap_rotor_{j}", "air", "air_gap", "air", gap),
+        ]

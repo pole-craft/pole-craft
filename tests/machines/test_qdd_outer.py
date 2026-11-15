@@ -108,3 +108,24 @@ def test_fit_depends_on_the_slot_count(changed, problems_of) -> None:
     # The same 5 mm tooth fits 12 slots but not 24: 2 * 16.5 * sin(pi/24) = 4.31 mm.
     problems = problems_of(changed("slots", 24, "poles", 28))
     assert list(problems) == ["geometry.stator.tooth_width_mm"]
+
+
+def test_shallow_taper_under_a_wide_tip_is_rejected(changed, problems_of) -> None:
+    # With a 0.1 mm taper the slot top is at 24.75 - 0.1 = 24.65 mm, where the
+    # tooth corner sits asin(2.5 / 24.65) = 5.821 degrees from the tooth axis.
+    # The tip edge is at 15 - asin(2 / 51) = 12.752 degrees, so the tip
+    # overhangs by 6.931 degrees and its underside needs
+    # 24.75 (1 - cos 6.931 deg) = 0.181 mm.
+    corner = math.degrees(math.asin(2.5 / 24.65))
+    edge = 15 - math.degrees(math.asin(2.0 / 51.0))
+    needed = 24.75 * (1 - math.cos(math.radians(edge - corner)))
+    assert needed == pytest.approx(0.181, abs=1e-3)
+
+    design_from_dict(changed("geometry.stator.tooth_tip_taper_mm", 0.19))
+    problems = problems_of(changed("geometry.stator.tooth_tip_taper_mm", 0.1))
+    assert list(problems) == ["geometry.stator.tooth_tip_taper_mm"]
+    assert "0.181" in problems["geometry.stator.tooth_tip_taper_mm"]
+
+
+def test_square_tip_is_always_accepted(changed) -> None:
+    design_from_dict(changed("geometry.stator.tooth_tip_taper_mm", 0))

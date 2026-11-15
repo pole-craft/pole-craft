@@ -12,6 +12,7 @@ where ``p`` is the number of pole pairs.
 from __future__ import annotations
 
 from cmath import exp
+from cmath import phase as angle_of
 from dataclasses import dataclass
 from math import gcd, pi, sin
 from operator import index
@@ -143,6 +144,23 @@ def concentrated_winding(slots: int, poles: int) -> tuple[Coil, ...]:
         phase, direction = _BELTS[belt]
         coils.append(Coil(tooth=tooth, phase=phase, direction=direction))
     return tuple(coils)
+
+
+def phase_axis_angle(slots: int, poles: int) -> float:
+    """Electrical angle of the phase A axis, in radians.
+
+    The direction of the summed phasors of phase A's coils, measured from
+    tooth 0. A magnet pointing away from the machine axis links the most flux
+    with phase A when its centre is at this electrical angle.
+    """
+    slots, poles = _checked_counts(slots, poles)
+    pole_pairs = poles // 2
+    total = 0j
+    for coil in concentrated_winding(slots, poles):
+        if coil.phase == "A":
+            angle = 2 * pi * ((coil.tooth * pole_pairs) % slots) / slots
+            total += coil.direction * exp(1j * angle)
+    return angle_of(total)
 
 
 def layout_string(coils: tuple[Coil, ...]) -> str:
