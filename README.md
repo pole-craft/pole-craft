@@ -2,7 +2,7 @@
 
 Open-source design and simulation tool for quasi-direct-drive (QDD) motors.
 
-> **Status: early development.** Design files can be loaded and checked. There is no geometry, meshing or simulation yet; the plan below describes what is being built.
+> **Status: early development.** Design files can be loaded and checked, and the winding layout and symmetry slice are worked out from the slot and pole counts. There is no geometry, meshing or simulation yet; the plan below describes what is being built.
 
 ## What it will do
 

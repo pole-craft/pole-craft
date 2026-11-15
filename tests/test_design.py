@@ -255,6 +255,15 @@ def test_smallest_slot_and_pole_counts_are_accepted(changed) -> None:
     assert (design.slots, design.poles) == (3, 2)
 
 
+@pytest.mark.parametrize("slots, poles", [(12, 12), (10, 8), (9, 18)])
+def test_slot_and_pole_combination_that_cannot_be_wound_is_rejected(
+    slots, poles, changed, problems_of
+) -> None:
+    problems = problems_of(changed("slots", slots, "poles", poles))
+    assert list(problems) == ["slots"]
+    assert "three-phase" in problems["slots"]
+
+
 @pytest.mark.parametrize("fraction", [0, -0.1, 1.01, 2])
 def test_arc_fraction_outside_0_to_1_is_rejected(fraction, changed, problems_of) -> None:
     problems = problems_of(changed("geometry.magnet.arc_fraction", fraction))

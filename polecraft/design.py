@@ -20,6 +20,7 @@ from typing import Any
 
 import yaml
 
+from polecraft.core.winding import combination_problem
 from polecraft.machines import machine_types, parameters_class
 from polecraft.machines.base import MachineParameters
 from polecraft.validation import DesignError, Problem, Section
@@ -199,6 +200,10 @@ def design_from_dict(data: Any, source: str | None = None) -> Design:
         problems.append(
             Problem("poles", f"must be even, since magnets come in north-south pairs; got {poles}")
         )
+    elif slots is not None and poles is not None:
+        unbalanced = combination_problem(slots, poles)
+        if unbalanced:
+            problems.append(Problem("slots", unbalanced))
 
     geometry = None
     if machine_type is None:
