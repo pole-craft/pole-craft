@@ -36,6 +36,17 @@ Commercial motor design tools are expensive, and their free student versions can
 
 Python, [Gmsh](https://gmsh.info) for meshing, and [FEMM](https://www.femm.info) as an independent reference for validation.
 
+## Development setup
+
+Needs Python 3.11 or newer. The package installs and its tests run, but it does not simulate anything yet.
+
+```
+python -m venv .venv
+.venv\Scripts\activate          # Linux/macOS: source .venv/bin/activate
+pip install -e ".[dev]"
+pytest
+```
+
 ## Contributing
 
 The project is just starting. Ideas, questions and motor data for validation are welcome: please open an issue.

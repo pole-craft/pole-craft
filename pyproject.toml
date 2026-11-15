@@ -1,0 +1,48 @@
+[build-system]
+requires = ["setuptools>=77"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "polecraft"
+dynamic = ["version"]
+description = "Open-source design and simulation tool for quasi-direct-drive (QDD) motors."
+readme = "README.md"
+requires-python = ">=3.11"
+license = "Apache-2.0"
+license-files = ["LICENSE"]
+keywords = ["motor", "electric machine", "finite element", "QDD", "BLDC", "PMSM"]
+classifiers = [
+    "Development Status :: 2 - Pre-Alpha",
+    "Intended Audience :: Science/Research",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Topic :: Scientific/Engineering :: Physics",
+]
+dependencies = [
+    "numpy>=1.26",
+    "scipy>=1.11",
+    "matplotlib>=3.8",
+    "PyYAML>=6.0",
+]
+
+[project.optional-dependencies]
+# Gmsh is GPL-licensed, so it is an optional extra and is only ever imported
+# from polecraft/core/mesh.py.
+mesh = ["gmsh>=4.11"]
+dev = ["pytest>=8.0"]
+
+[tool.setuptools.dynamic]
+version = { attr = "polecraft.__version__" }
+
+[tool.setuptools.packages.find]
+include = ["polecraft*"]
+
+[tool.setuptools.package-data]
+"polecraft.data" = ["materials/*"]
+
+[tool.pytest.ini_options]
+minversion = "8.0"
+testpaths = ["tests"]
+addopts = "-ra --strict-markers"
