@@ -2,7 +2,7 @@
 
 Open-source design and simulation tool for quasi-direct-drive (QDD) motors.
 
-> **Status: early development.** Design files can be loaded and checked, the winding layout and symmetry slice are worked out from the slot and pole counts, and the cross-section of an outer-rotor motor is built as labelled regions (steel, coils, magnets, air). There is no meshing or simulation yet; the plan below describes what is being built.
+> **Status: early development.** Design files can be loaded and checked, the winding layout and symmetry slice are worked out from the slot and pole counts, and the cross-section of an outer-rotor motor is built as labelled regions (steel, coils, magnets, air) and meshed with triangles. There is no simulation yet; the plan below describes what is being built.
 
 ## What it will do
 
@@ -43,9 +43,11 @@ Needs Python 3.11 or newer. The package installs and its tests run, but it does 
 ```
 python -m venv .venv
 .venv\Scripts\activate          # Linux/macOS: source .venv/bin/activate
-pip install -e ".[dev]"
+pip install -e ".[dev,mesh]"
 pytest
 ```
+
+The `mesh` extra installs [Gmsh](https://gmsh.info), which is GPL-licensed and optional. Without it everything except meshing works, and the meshing tests are skipped.
 
 ## Contributing
 
