@@ -1,0 +1,5 @@
+# Test input: "slots" is given twice, which must be rejected.
+type: qdd_outer
+slots: 12
+poles: 14
+slots: 18

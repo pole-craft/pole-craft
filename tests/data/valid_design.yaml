@@ -1,0 +1,45 @@
+# Test input: same values as VALID_DESIGN in tests/conftest.py.
+format_version: 1
+type: qdd_outer
+slots: 12
+poles: 14
+
+geometry:
+  air_gap_mm: 0.5
+  rotor:
+    outer_diameter_mm: 60
+    yoke_thickness_mm: 2.0
+  magnet:
+    thickness_mm: 2.0
+    arc_fraction: 0.8
+    magnetisation: radial
+  stator:
+    tooth_width_mm: 5.0
+    slot_opening_mm: 2.0
+    tooth_tip_height_mm: 0.75
+    tooth_tip_taper_mm: 0.25
+    slot_depth_mm: 8.0
+    yoke_thickness_mm: 3.0
+
+axial:
+  stack_length_mm: 10
+  magnet_overhang_mm: 1.0
+  skew_deg: 2.0
+  end_winding_overhang_mm: 4.0
+
+magnet:
+  material: N35
+  temperature_C: 60
+
+winding:
+  wire_diameter_mm: 0.4
+  turns_per_coil: 30
+  parallel_strands: 2
+  conductor: copper
+  connection: delta
+  temperature_C: 90
+
+steel:
+  stator: M250-35A
+  rotor: S235
+  stacking_factor: 0.97
