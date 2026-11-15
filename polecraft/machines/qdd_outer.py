@@ -238,7 +238,10 @@ class QddOuterParameters:
         )
         overhang = edge - flank
         if 0 < taper and tip_radius * math.cos(overhang) < self.slot_top_radius_mm:
+            # Rounded up, so that the suggested value is itself accepted.
             needed = tip_radius * (1 - math.cos(overhang))
+            step = 10 ** (math.floor(math.log10(needed)) - 2)
+            needed = math.ceil(needed / step) * step
             return [
                 Problem(
                     "stator.tooth_tip_taper_mm",
@@ -270,11 +273,11 @@ class QddOuter(Machine):
         """Regions of the smallest repeating slice, or of the whole machine."""
         design = self.design
         dims: QddOuterParameters = design.geometry
-        part = self.symmetry()
+        repeat = self.symmetry()
         coils = concentrated_winding(design.slots, design.poles)
 
-        teeth = design.slots if full else part.slots
-        poles = design.poles if full else part.poles
+        teeth = design.slots if full else repeat.slots
+        poles = design.poles if full else repeat.poles
         stator = [region for k in range(teeth) for region in self._tooth_unit(coils[k])]
         rotor = [region for j in range(poles) for region in self._pole_unit(j)]
 
@@ -288,8 +291,8 @@ class QddOuter(Machine):
             band_outer_radius=dims.magnet_inner_radius_mm * MM - layer,
             stator_start_angle=-math.pi / design.slots,
             rotor_start_angle=-math.pi / design.poles,
-            angle=2 * math.pi if full else 2 * math.pi / part.periods,
-            antiperiodic=part.antiperiodic and not full,
+            span_angle=2 * math.pi if full else 2 * math.pi / repeat.periods,
+            antiperiodic=repeat.antiperiodic and not full,
             stack_length=design.axial.stack_length_mm * MM,
         )
 
@@ -310,7 +313,10 @@ class QddOuter(Machine):
         bottom = dims.slot_bottom_radius_mm * MM
         top = dims.slot_top_radius_mm * MM
         surface = dims.stator_outer_radius_mm * MM
-        tip = surface - dims.stator.tooth_tip_height_mm * MM
+        # With no taper the underside of the tip is an arc at the slot top, and
+        # the tip corner must be at exactly that radius.
+        square_tip = dims.stator.tooth_tip_taper_mm == 0
+        tip = top if square_tip else surface - dims.stator.tooth_tip_height_mm * MM
         gap_layer = surface + dims.air_gap_mm * MM / 3
         half_width = dims.stator.tooth_width_mm * MM / 2
 
@@ -320,8 +326,6 @@ class QddOuter(Machine):
         # Angle of the tip edge: half a pitch less half the slot opening.
         edge = half_pitch - math.asin(dims.stator.slot_opening_mm * MM / (2 * surface))
 
-        # With no taper the underside of the tip is an arc at the slot top.
-        square_tip = dims.stator.tooth_tip_taper_mm == 0
         under = "cw" if square_tip else "line"
 
         tooth = closed_loop(
@@ -401,17 +405,29 @@ class QddOuter(Machine):
         # Positive current in a +1 coil comes out of the plane on the
         # counter-clockwise side of its tooth and returns on the other side.
         turns = design.winding.turns_per_coil
-        side_ccw = CoilSide(coil.phase, k, coil.direction, turns)
-        side_cw = CoilSide(coil.phase, k, -coil.direction, turns)
+        side_ccw = CoilSide(phase=coil.phase, tooth=k, sign=coil.direction, turns=turns)
+        side_cw = CoilSide(phase=coil.phase, tooth=k, sign=-coil.direction, turns=turns)
+
+        def steel_region(name: str, role: str, boundary: tuple) -> Region:
+            return Region(name=name, kind="steel", role=role, material=steel, boundary=boundary)
+
+        def air_region(name: str, role: str, boundary: tuple) -> Region:
+            return Region(name=name, kind="air", role=role, material="air", boundary=boundary)
+
+        def coil_region(name: str, boundary: tuple, side: CoilSide) -> Region:
+            return Region(
+                name=name, kind="coil", role="coil", material=copper,
+                boundary=boundary, coil_side=side,
+            )
 
         return [
-            Region(f"stator_yoke_{k}", "steel", "stator_yoke", steel, yoke),
-            Region(f"tooth_{k}", "steel", "tooth", steel, tooth),
-            Region(f"coil_{k}_cw", "coil", "coil", copper, coil_cw, coil_side=side_cw),
-            Region(f"coil_{k}_ccw", "coil", "coil", copper, coil_ccw, coil_side=side_ccw),
-            Region(f"slot_air_{k}_cw", "air", "slot_air", "air", air_cw),
-            Region(f"slot_air_{k}_ccw", "air", "slot_air", "air", air_ccw),
-            Region(f"gap_stator_{k}", "air", "air_gap", "air", gap),
+            steel_region(f"stator_yoke_{k}", "stator_yoke", yoke),
+            steel_region(f"tooth_{k}", "tooth", tooth),
+            coil_region(f"coil_{k}_cw", coil_cw, side_cw),
+            coil_region(f"coil_{k}_ccw", coil_ccw, side_ccw),
+            air_region(f"slot_air_{k}_cw", "slot_air", air_cw),
+            air_region(f"slot_air_{k}_ccw", "slot_air", air_ccw),
+            air_region(f"gap_stator_{k}", "air_gap", gap),
         ]
 
     def _pole_unit(self, j: int) -> list[Region]:
@@ -430,16 +446,25 @@ class QddOuter(Machine):
 
         # Magnets alternate: even ones point away from the axis, odd ones towards it.
         magnetisation = Magnetisation(
-            dims.magnet.magnetisation, centre, 1 if j % 2 == 0 else -1
+            pattern=dims.magnet.magnetisation,
+            axis_angle=centre,
+            polarity=1 if j % 2 == 0 else -1,
         )
-        material = design.magnet.material
+
+        def air_region(name: str, role: str, boundary: tuple) -> Region:
+            return Region(name=name, kind="air", role=role, material="air", boundary=boundary)
+
+        def magnet_region(boundary: tuple) -> Region:
+            return Region(
+                name=f"magnet_{j}", kind="magnet", role="magnet",
+                material=design.magnet.material, boundary=boundary,
+                magnetisation=magnetisation,
+            )
 
         if dims.magnet.arc_fraction == 1:
             # A full ring of magnets: no air between them.
             magnet = ring_sector(magnet_inner, magnet_outer, low, high)
-            regions = [
-                Region(f"magnet_{j}", "magnet", "magnet", material, magnet, magnetisation)
-            ]
+            regions = [magnet_region(magnet)]
             corners: tuple[float, ...] = ()
         else:
             half_magnet = dims.magnet.arc_fraction * half_pitch
@@ -448,15 +473,18 @@ class QddOuter(Machine):
             air_cw = ring_sector(magnet_inner, magnet_outer, low, start)
             air_ccw = ring_sector(magnet_inner, magnet_outer, end, high)
             regions = [
-                Region(f"magnet_{j}", "magnet", "magnet", material, magnet, magnetisation),
-                Region(f"magnet_gap_{j}_cw", "air", "magnet_gap", "air", air_cw),
-                Region(f"magnet_gap_{j}_ccw", "air", "magnet_gap", "air", air_ccw),
+                magnet_region(magnet),
+                air_region(f"magnet_gap_{j}_cw", "magnet_gap", air_cw),
+                air_region(f"magnet_gap_{j}_ccw", "magnet_gap", air_ccw),
             ]
             corners = (start, end)
 
         yoke = ring_sector(magnet_outer, outer, low, high, inner_breaks=corners)
         gap = ring_sector(gap_layer, magnet_inner, low, high, outer_breaks=corners)
         return regions + [
-            Region(f"rotor_yoke_{j}", "steel", "rotor_yoke", design.steel.rotor, yoke),
-            Region(f"gap_rotor_{j}", "air", "air_gap", "air", gap),
+            Region(
+                name=f"rotor_yoke_{j}", kind="steel", role="rotor_yoke",
+                material=design.steel.rotor, boundary=yoke,
+            ),
+            air_region(f"gap_rotor_{j}", "air_gap", gap),
         ]

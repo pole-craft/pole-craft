@@ -95,7 +95,12 @@ class Edge:
 
 @dataclass(frozen=True)
 class Magnetisation:
-    """How a magnet region is magnetised."""
+    """How a magnet region is magnetised.
+
+    The axis angle and the points given to ``direction`` are in the frame the
+    region is described in. For a rotor that has turned, turn the region with
+    ``Region.rotated`` first.
+    """
 
     pattern: str  # "parallel": one direction throughout; "radial": along the radius
     axis_angle: float  # angle of the magnet's centre line
@@ -123,7 +128,7 @@ class Region:
 
     name: str  # unique within a geometry, e.g. "tooth_3"
     kind: str  # "steel", "air", "coil" or "magnet"
-    part: str  # what it is in the machine, e.g. "tooth" or "rotor_yoke"
+    role: str  # what it is in the machine, e.g. "tooth" or "rotor_yoke"
     material: str  # grade name, or "air"
     boundary: tuple[Edge, ...]  # one closed loop, counter-clockwise, no holes
     magnetisation: Magnetisation | None = None
@@ -179,12 +184,18 @@ def closed_loop(corners: Sequence[tuple[float, float, str]]) -> tuple[Edge, ...]
     for i in range(count):
         radius, angle, kind = corners[i]
         next_radius, next_angle, _ = corners[(i + 1) % count]
+        if kind not in ("line", "ccw", "cw"):
+            raise ValueError(f"edge must be 'line', 'ccw' or 'cw', got {kind!r}")
         start, end = polar(radius, angle), polar(next_radius, next_angle)
         if math.dist(start, end) < SAME_POINT:
             continue
         if kind == "line":
             edges.append(Edge(start, end))
             continue
+        if abs(next_radius - radius) > SAME_POINT:
+            raise ValueError(
+                f"an arc about the origin cannot join radius {radius} to {next_radius}"
+            )
         ccw = kind == "ccw"
         turn = (next_angle - angle if ccw else angle - next_angle) % (2 * math.pi)
         if turn > LONGEST_ARC:
@@ -227,9 +238,14 @@ class Geometry:
     between two circles, which is not a region: it is the layer that is
     reconnected when the rotor moves.
 
-    Each part covers the same angle, starting from its own start angle. In an
+    The stator regions lie between the stator's own surface and the band, the
+    rotor regions between the band and the rotor's own surface. Stator and
+    rotor cover the same angle, each starting from its own start angle. In an
     antiperiodic slice the field and currents of the next slice are these
     with the opposite sign.
+
+    The model ends at the inner and outer radius: no air is modelled beyond
+    the iron there, which assumes the yokes are not saturated enough to leak.
     """
 
     stator: tuple[Region, ...]
@@ -240,12 +256,13 @@ class Geometry:
     band_outer_radius: float
     stator_start_angle: float
     rotor_start_angle: float
-    angle: float  # angle covered; 2 pi for a full machine
+    span_angle: float  # angle the slice covers; 2 pi for a full machine
     antiperiodic: bool
     stack_length: float  # along the shaft
 
     @property
     def regions(self) -> tuple[Region, ...]:
+        """Stator regions followed by rotor regions."""
         return self.stator + self.rotor
 
     def region(self, name: str) -> Region:
@@ -256,8 +273,9 @@ class Geometry:
         raise KeyError(name)
 
     def band_area(self) -> float:
-        return 0.5 * self.angle * (self.band_outer_radius**2 - self.band_inner_radius**2)
+        """Area of the band between its two circles, in square metres."""
+        return 0.5 * self.span_angle * (self.band_outer_radius**2 - self.band_inner_radius**2)
 
     def area(self) -> float:
         """Area of the whole slice, from the inner radius to the outer radius."""
-        return 0.5 * self.angle * (self.outer_radius**2 - self.inner_radius**2)
+        return 0.5 * self.span_angle * (self.outer_radius**2 - self.inner_radius**2)

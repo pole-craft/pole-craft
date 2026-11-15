@@ -24,3 +24,9 @@ def test_version_matches_installed_metadata() -> None:
 @pytest.mark.parametrize("name", SUBPACKAGES)
 def test_subpackage_imports(name: str) -> None:
     importlib.import_module(f"polecraft.{name}")
+
+
+def test_main_entry_points_are_exported() -> None:
+    for name in ("load_design", "design_from_dict", "machine_for", "DesignError"):
+        assert name in polecraft.__all__
+        assert callable(getattr(polecraft, name))

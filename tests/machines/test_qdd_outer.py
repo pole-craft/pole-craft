@@ -121,10 +121,27 @@ def test_shallow_taper_under_a_wide_tip_is_rejected(changed, problems_of) -> Non
     needed = 24.75 * (1 - math.cos(math.radians(edge - corner)))
     assert needed == pytest.approx(0.181, abs=1e-3)
 
-    design_from_dict(changed("geometry.stator.tooth_tip_taper_mm", 0.19))
     problems = problems_of(changed("geometry.stator.tooth_tip_taper_mm", 0.1))
     assert list(problems) == ["geometry.stator.tooth_tip_taper_mm"]
     assert "0.181" in problems["geometry.stator.tooth_tip_taper_mm"]
+
+    # The limit itself is 0.1799 mm: a deeper taper moves the slot top inwards
+    # and widens the angle to the tooth corner, so less is needed than above.
+    assert list(problems_of(changed("geometry.stator.tooth_tip_taper_mm", 0.17))) == [
+        "geometry.stator.tooth_tip_taper_mm"
+    ]
+    design_from_dict(changed("geometry.stator.tooth_tip_taper_mm", 0.19))
+
+
+def test_suggested_taper_is_itself_accepted(changed, problems_of) -> None:
+    for opening in (0.3, 1.0, 2.0, 3.0):
+        data = changed(
+            "geometry.stator.slot_opening_mm", opening,
+            "geometry.stator.tooth_tip_taper_mm", 0.05,
+        )
+        message = problems_of(data)["geometry.stator.tooth_tip_taper_mm"]
+        suggested = float(message.split("Use about ")[1].split(" mm")[0])
+        design_from_dict(changed("geometry.stator.tooth_tip_taper_mm", suggested))
 
 
 def test_square_tip_is_always_accepted(changed) -> None:

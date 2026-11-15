@@ -18,7 +18,9 @@ from polecraft.core.geometry import (
 
 
 def region(boundary: tuple[Edge, ...], **extra) -> Region:
-    return Region("test", "air", "test", "air", boundary, **extra)
+    return Region(
+        name="test", kind="air", role="test", material="air", boundary=boundary, **extra
+    )
 
 
 def polygon_area(points: np.ndarray) -> float:
@@ -61,6 +63,22 @@ def test_rotated_edge() -> None:
     assert turned.end == pytest.approx((-1.0, 0.0))
     assert turned.centre == pytest.approx((0.0, 0.0))
     assert turned.ccw is True
+
+
+def test_rotation_turns_the_centre_of_an_arc() -> None:
+    arc = Edge((6.0, 5.0), (5.0, 6.0), centre=(5.0, 5.0), ccw=True)
+    turned = arc.rotated(math.pi / 2)
+    assert turned.centre == pytest.approx((-5.0, 5.0))
+    assert turned.start == pytest.approx((-5.0, 6.0))
+    assert turned.radius == pytest.approx(1.0)
+
+
+def test_points_of_an_arc_off_the_origin_lie_on_the_arc() -> None:
+    arc = Edge((6.0, 5.0), (5.0, 6.0), centre=(5.0, 5.0), ccw=True)
+    points = arc.points(1e-6)
+    assert len(points) > 10
+    for x, y in points:
+        assert math.hypot(x - 5.0, y - 5.0) == pytest.approx(1.0)
 
 
 # Areas
@@ -136,6 +154,16 @@ def test_coinciding_corners_are_merged() -> None:
     assert len(boundary) == 4
 
 
+def test_unknown_edge_kind_is_rejected() -> None:
+    with pytest.raises(ValueError, match="'line', 'ccw' or 'cw'"):
+        closed_loop([(1.0, 0.0, "line"), (2.0, 0.0, "arc"), (2.0, 1.0, "line")])
+
+
+def test_arc_between_two_radii_is_rejected() -> None:
+    with pytest.raises(ValueError, match="cannot join radius"):
+        closed_loop([(1.0, 0.0, "ccw"), (2.0, 1.0, "line"), (1.5, 0.5, "line")])
+
+
 def test_boundary_is_closed() -> None:
     boundary = ring_sector(1.0, 2.0, 0.2, 0.9, inner_breaks=(0.5,))
     for edge, following in zip(boundary, boundary[1:] + boundary[:1]):
@@ -202,13 +230,22 @@ def test_radial_magnetisation_follows_the_radius() -> None:
 
 def small_geometry() -> Geometry:
     stator = (
-        Region("yoke", "steel", "stator_yoke", "M270-35A", ring_sector(1.0, 2.0, 0.0, 1.0)),
         Region(
-            "coil", "coil", "coil", "copper", ring_sector(2.0, 2.4, 0.0, 1.0),
-            coil_side=CoilSide("A", 0, 1, 20),
+            name="yoke", kind="steel", role="stator_yoke", material="M270-35A",
+            boundary=ring_sector(1.0, 2.0, 0.0, 1.0),
+        ),
+        Region(
+            name="coil", kind="coil", role="coil", material="copper",
+            boundary=ring_sector(2.0, 2.4, 0.0, 1.0),
+            coil_side=CoilSide(phase="A", tooth=0, sign=1, turns=20),
         ),
     )
-    rotor = (Region("magnet", "magnet", "magnet", "N42SH", ring_sector(2.6, 3.0, 0.5, 1.5)),)
+    rotor = (
+        Region(
+            name="magnet", kind="magnet", role="magnet", material="N42SH",
+            boundary=ring_sector(2.6, 3.0, 0.5, 1.5),
+        ),
+    )
     return Geometry(
         stator=stator,
         rotor=rotor,
@@ -218,7 +255,7 @@ def small_geometry() -> Geometry:
         band_outer_radius=2.6,
         stator_start_angle=0.0,
         rotor_start_angle=0.5,
-        angle=1.0,
+        span_angle=1.0,
         antiperiodic=True,
         stack_length=0.012,
     )

@@ -152,6 +152,12 @@ def phase_axis_angle(slots: int, poles: int) -> float:
     The direction of the summed phasors of phase A's coils, measured from
     tooth 0. A magnet pointing away from the machine axis links the most flux
     with phase A when its centre is at this electrical angle.
+
+    A tooth links the field cos(p * angle) over one slot pitch, which gives
+    sin(pi p / slots) times the field at its centre. With more pole pairs
+    than slots that factor can be negative: the tooth then links flux of the
+    opposite sign to the magnet facing it, and the axis is turned by half a
+    cycle to account for it.
     """
     slots, poles = _checked_counts(slots, poles)
     pole_pairs = poles // 2
@@ -160,6 +166,8 @@ def phase_axis_angle(slots: int, poles: int) -> float:
         if coil.phase == "A":
             angle = 2 * pi * ((coil.tooth * pole_pairs) % slots) / slots
             total += coil.direction * exp(1j * angle)
+    if sin(pi * (pole_pairs % (2 * slots)) / slots) < 0:
+        total = -total
     return angle_of(total)
 
 

@@ -50,7 +50,12 @@ class Machine(ABC):
 
     @abstractmethod
     def build_geometry(self, full: bool = False) -> Geometry:
-        """Regions of the smallest repeating slice, or of the whole machine."""
+        """Regions of the smallest repeating slice, or of the whole machine.
+
+        Tooth 0 is centred on the x axis. The rotor is built at rotor angle
+        0, with magnet 0 centred on the x axis and magnetised away from the
+        machine axis.
+        """
 
     def excitation(self, angle: float, current: float, advance: float = 0.0) -> dict[str, float]:
         """Phase currents in amperes for a rotor position.
@@ -66,6 +71,10 @@ class Machine(ABC):
         current times the rate of change of that flux with angle, so current
         varying as cos(p * angle - a + pi/2) drives the rotor
         counter-clockwise. B and C follow 120 and 240 degrees later.
+
+        This assumes a three-phase winding with a coil on every tooth and the
+        placement described in ``build_geometry``. A machine that differs
+        must override it.
         """
         pole_pairs = self.design.poles // 2
         axis = phase_axis_angle(self.design.slots, self.design.poles)

@@ -13,6 +13,7 @@ from polecraft.core.winding import (
     combination_problem,
     concentrated_winding,
     layout_string,
+    phase_axis_angle,
     symmetry,
     winding_factor,
 )
@@ -333,3 +334,24 @@ def test_winding_rejects_too_few_slots() -> None:
     for function in (combination_problem, concentrated_winding, winding_factor):
         with pytest.raises(ValueError, match="slots must be at least 3"):
             function(2, 2)
+
+
+# Phase axis
+
+
+def test_phase_axis_lies_between_the_two_teeth_of_a_phase_group() -> None:
+    # 12 slots, 10 poles: phase A is tooth 0 at 0 degrees and tooth 1,
+    # reversed, at 150 - 180 = -30 electrical degrees.
+    assert phase_axis_angle(12, 10) == pytest.approx(math.radians(-15))
+    assert phase_axis_angle(36, 42) == pytest.approx(math.radians(-15))
+    assert phase_axis_angle(24, 22) == pytest.approx(math.radians(-7.5))
+
+
+def test_phase_axis_is_on_tooth_0_when_a_phase_group_is_symmetric_about_it() -> None:
+    assert phase_axis_angle(12, 8) == pytest.approx(0.0)
+    assert phase_axis_angle(9, 8) == pytest.approx(0.0)
+
+
+def test_phase_axis_rejects_unbalanced_combinations() -> None:
+    with pytest.raises(ValueError, match="three-phase"):
+        phase_axis_angle(12, 12)

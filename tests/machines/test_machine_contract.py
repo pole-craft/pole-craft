@@ -77,6 +77,57 @@ def test_phase_a_axis_of_the_reference_winding() -> None:
     assert phase_axis_angle(12, 8) == pytest.approx(0.0)
 
 
+def test_phase_a_axis_turns_when_a_tooth_spans_more_than_a_pole_pair() -> None:
+    # 3 slots, 8 poles: each 120 degree tooth covers 1.33 pole pairs, so it
+    # links sin(4 pi / 3) < 0 times the field at its centre. Tooth 0 is still
+    # a +1 phase A coil, but it links the most flux when a magnet pointing
+    # towards the axis faces it.
+    assert phase_axis_angle(3, 2) == pytest.approx(0.0)
+    assert abs(phase_axis_angle(3, 8)) == pytest.approx(math.pi)
+    assert abs(phase_axis_angle(9, 24)) == pytest.approx(math.pi)
+
+
+def test_torque_from_the_winding_and_magnets_is_counter_clockwise() -> None:
+    # Flux linked by a tooth coil from the field cos(p (angle - rotor)) of the
+    # magnets, integrated over the tooth's slot pitch. Torque is the sum of
+    # phase current times the change of linkage with rotor angle.
+    from polecraft.core.winding import concentrated_winding
+
+    class Stub:
+        def __init__(self, slots: int, poles: int) -> None:
+            self.slots, self.poles = slots, poles
+
+    for slots, poles in [(36, 42), (12, 10), (9, 8), (12, 8), (3, 8), (9, 24), (12, 26)]:
+        machine = Machine.__new__(QddOuter)
+        machine.design = Stub(slots, poles)
+        p = poles // 2
+        coils = concentrated_winding(slots, poles)
+
+        def linkage(rotor: float) -> dict[str, float]:
+            totals = {"A": 0.0, "B": 0.0, "C": 0.0}
+            for coil in coils:
+                centre = 2 * math.pi * coil.tooth / slots
+                low, high = centre - math.pi / slots, centre + math.pi / slots
+                flux = (math.sin(p * (high - rotor)) - math.sin(p * (low - rotor))) / p
+                totals[coil.phase] += coil.direction * flux
+            return totals
+
+        for rotor in (0.0, 0.013, 0.2):
+            step = 1e-6
+            ahead, behind = linkage(rotor + step), linkage(rotor - step)
+            currents = machine.excitation(rotor, 1.0)
+            torque = sum(
+                currents[ph] * (ahead[ph] - behind[ph]) / (2 * step) for ph in "ABC"
+            )
+            reversed_torque = sum(
+                machine.excitation(rotor, 1.0, advance=math.pi)[ph]
+                * (ahead[ph] - behind[ph]) / (2 * step)
+                for ph in "ABC"
+            )
+            assert torque > 0, (slots, poles)
+            assert reversed_torque == pytest.approx(-torque)
+
+
 def test_current_is_a_quarter_cycle_ahead_of_the_flux(machine: Machine) -> None:
     # Rotor placed so that phase A links the most flux: its current is zero
     # there and the other two are equal and opposite.
