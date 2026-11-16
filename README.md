@@ -1,8 +1,10 @@
 # Pole-Craft
 
+[![PyPI version](https://img.shields.io/pypi/v/polecraft)](https://pypi.org/project/polecraft/)
+
 Open-source design and simulation tool for quasi-direct-drive (QDD) motors.
 
-> **Status: early development (version 0.0.1).** Pole-Craft loads a motor design file and checks it, works out the winding layout and the slice of the motor that repeats, builds the cross-section of an outer-rotor motor as labelled regions (steel, coils, magnets, air), meshes it with triangles and saves a picture with the `polecraft mesh` command. **It does not simulate anything yet:** there is no field solver, so it reports no torque, back-EMF or losses. The roadmap below shows what comes next.
+> **Status: early development (version 0.0.1).** What 0.0.1 can do: load a motor design file and check it, work out the winding layout and the slice of the motor that repeats, build the cross-section of an outer-rotor surface-magnet motor as labelled regions (steel, coils, magnets, air), mesh it with triangles and save a picture, from the `polecraft mesh` command or from Python. What it cannot do: **it does not simulate anything yet.** There is no field solver, so it reports no torque, back-EMF or losses, and inner-rotor motors are not supported. The roadmap below shows what comes next.
 
 ![Mesh of the repeating slice of a 36-slot, 42-pole outer-rotor motor](https://raw.githubusercontent.com/pole-craft/pole-craft/main/docs/images/mesh_36s42p.png)
 
@@ -30,7 +32,7 @@ Needs Python 3.11 or newer.
 pip install "polecraft[mesh]"
 ```
 
-The `mesh` extra installs [Gmsh](https://gmsh.info), which does the meshing. Gmsh is licensed under the GPL, so it is kept optional: Pole-Craft does not include any Gmsh code and only calls it if you install it. Plain `pip install polecraft` gives everything except meshing.
+The `mesh` extra installs [Gmsh](https://gmsh.info), which does the meshing. Gmsh is licensed under the GPL, so it is kept optional: Pole-Craft does not include any Gmsh code and only calls it if you install it. A plain `pip install polecraft` does not include Gmsh: designs can still be loaded and their geometry built from Python, but `polecraft mesh` stops with a one-line message saying Gmsh is missing. Install the `mesh` extra to fix it.
 
 On Linux, Gmsh needs a few system libraries that servers, containers and WSL often lack. If `polecraft mesh` reports `libGLU.so.1: cannot open shared object file` (or a similar library name), install them. On Debian or Ubuntu:
 

@@ -25,5 +25,27 @@ def test_missing_gmsh_is_explained(repo_root: Path, monkeypatch: pytest.MonkeyPa
     geometry = machine_for(design).build_geometry()
     # A None entry makes "import gmsh" fail as if it were not installed.
     monkeypatch.setitem(sys.modules, "gmsh", None)
-    with pytest.raises(ImportError, match="pip install gmsh"):
+    with pytest.raises(ImportError, match=r'not installed; install it with: pip install "polecraft\[mesh\]"'):
         build_mesh(geometry)
+
+
+def test_gmsh_that_cannot_load_its_library_is_explained(
+    repo_root: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """On Linux, importing Gmsh fails with OSError when a system library is absent."""
+    import builtins
+
+    design = load_design(repo_root / "designs" / "qdd_outer_36s42p.yaml")
+    geometry = machine_for(design).build_geometry()
+    real_import = builtins.__import__
+
+    def broken_import(name: str, *arguments, **keywords):
+        if name == "gmsh":
+            raise OSError("libGLU.so.1: cannot open shared object file")
+        return real_import(name, *arguments, **keywords)
+
+    monkeypatch.delitem(sys.modules, "gmsh", raising=False)
+    monkeypatch.setattr(builtins, "__import__", broken_import)
+    with pytest.raises(ImportError, match="installed but could not be loaded") as caught:
+        build_mesh(geometry)
+    assert "libGLU.so.1" in str(caught.value) and "README" in str(caught.value)

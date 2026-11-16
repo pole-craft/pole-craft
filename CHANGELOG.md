@@ -5,6 +5,15 @@ numbers follow [semantic versioning](https://semver.org); while the version
 is 0.0.x the design-file format and the Python interface may change between
 releases.
 
+## [0.0.2] - unreleased
+
+### Changed
+
+- When Gmsh is not installed, `polecraft mesh` now says to install
+  `polecraft[mesh]` (it said `pip install gmsh` before).
+- When Gmsh is installed but cannot load, as on Linux without its system
+  libraries, the message now says so and points to the README.
+
 ## [0.0.1] - 2026-11-16
 
 First release. It loads a design file, builds the geometry of an outer-rotor

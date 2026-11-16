@@ -184,8 +184,13 @@ def test_missing_gmsh_is_reported(
 ) -> None:
     monkeypatch.setitem(sys.modules, "gmsh", None)
     assert main(["mesh", str(reference), "-o", str(tmp_path / "m.png")]) == 1
-    error = capsys.readouterr().err
-    assert "pip install gmsh" in error and "Traceback" not in error
+    output = capsys.readouterr()
+    assert output.out == ""
+    assert output.err == (
+        "polecraft: meshing needs the optional Gmsh package, which is not installed; "
+        'install it with: pip install "polecraft[mesh]"\n'
+    )
+    assert list(tmp_path.iterdir()) == []
 
 
 def test_ctrl_c_stops_quietly(

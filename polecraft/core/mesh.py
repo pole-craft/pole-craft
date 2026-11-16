@@ -94,7 +94,7 @@ def build_mesh(geometry: Geometry, size: float = 1.0) -> Mesh:
     mesh size. The usual case is the air under a tooth tip whose taper is
     only just deep enough: the underside then meets the slot at a fine point.
 
-    Raises ImportError if Gmsh is not installed, and ValueError if the
+    Raises ImportError if Gmsh is not installed or cannot be loaded, and ValueError if the
     geometry cannot be meshed, for example because a region has an edge too
     short to mesh.
     """
@@ -213,7 +213,15 @@ def _mesh_regions(
         import gmsh
     except ImportError as error:
         raise ImportError(
-            "meshing needs the optional Gmsh package; install it with: pip install gmsh"
+            "meshing needs the optional Gmsh package, which is not installed; "
+            'install it with: pip install "polecraft[mesh]"'
+        ) from error
+    except OSError as error:
+        # Gmsh loads its compiled library on import; on Linux that fails if a
+        # system library such as libGLU is absent.
+        raise ImportError(
+            f"Gmsh is installed but could not be loaded ({error}); on Linux it needs "
+            "a few system libraries, listed in the install section of the README"
         ) from error
     if gmsh.isInitialized():
         raise RuntimeError("Gmsh is already in use in this process; close it before meshing")
