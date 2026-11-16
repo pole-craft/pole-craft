@@ -1,0 +1,55 @@
+name: Tests
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: tests-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  tests:
+    name: ${{ matrix.os }}, Python ${{ matrix.python }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+        python: ["3.11", "3.14"]
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v6
+        with:
+          python-version: ${{ matrix.python }}
+          cache: pip
+      # Shared libraries the Gmsh wheel loads on Linux.
+      - name: Install Gmsh system libraries
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libglu1-mesa libxcursor1 libxft2 libxinerama1 libxrender1 libgomp1
+      - name: Install
+        run: python -m pip install -e ".[dev,mesh]"
+      # Fails here, not as silently skipped tests, if Gmsh cannot be loaded.
+      - name: Check that Gmsh loads
+        run: python -c "import gmsh; gmsh.initialize(); print(gmsh.__version__); gmsh.finalize()"
+      - name: Run the tests
+        run: python -m pytest
+
+  without-gmsh:
+    name: Without Gmsh
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.11"
+          cache: pip
+      - name: Install
+        run: python -m pip install -e ".[dev]"
+      - name: Run the tests
+        run: python -m pytest

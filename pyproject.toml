@@ -10,14 +10,17 @@ readme = "README.md"
 requires-python = ">=3.11"
 license = "Apache-2.0"
 license-files = ["LICENSE"]
+authors = [{ name = "Varun Pandithurai" }]
 keywords = ["motor", "electric machine", "finite element", "QDD", "BLDC", "PMSM"]
 classifiers = [
     "Development Status :: 2 - Pre-Alpha",
     "Intended Audience :: Science/Research",
+    "Operating System :: OS Independent",
     "Programming Language :: Python :: 3",
     "Programming Language :: Python :: 3.11",
     "Programming Language :: Python :: 3.12",
     "Programming Language :: Python :: 3.13",
+    "Programming Language :: Python :: 3.14",
     "Topic :: Scientific/Engineering :: Physics",
 ]
 dependencies = [
@@ -32,6 +35,11 @@ dependencies = [
 # from polecraft/core/mesh.py.
 mesh = ["gmsh>=4.11"]
 dev = ["pytest>=8.0"]
+
+[project.urls]
+Repository = "https://github.com/pole-craft/pole-craft"
+Issues = "https://github.com/pole-craft/pole-craft/issues"
+Changelog = "https://github.com/pole-craft/pole-craft/blob/main/CHANGELOG.md"
 
 [project.scripts]
 polecraft = "polecraft.cli:main"

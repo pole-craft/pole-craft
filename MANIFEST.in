@@ -1,0 +1,5 @@
+include CHANGELOG.md
+graft tests
+graft designs
+graft examples
+global-exclude *.py[cod]
