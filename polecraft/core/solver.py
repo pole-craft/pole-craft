@@ -148,6 +148,72 @@ def flux_density(
     return np.column_stack([slope[:, 1], -slope[:, 0]])
 
 
+def _to_nodes(local: NDArray[np.float64], triangles: NDArray, count: int) -> NDArray[np.float64]:
+    """Add up per-corner values, shape (m, 3), at the nodes they belong to."""
+    total = np.bincount(triangles.ravel(), weights=local.ravel(), minlength=count)
+    return total.astype(float, copy=False)  # bincount gives integers for no triangles
+
+
+def current_load(
+    nodes: ArrayLike, triangles: ArrayLike, current_density: ArrayLike
+) -> NDArray[np.float64]:
+    """Load vector of the currents in the mesh, shape (n,), in amperes.
+
+    ``current_density`` is J in A/m2, positive out of the plane: one value,
+    or one per triangle (zero where there is no conductor). The current of a
+    triangle, J times its area, is shared equally between its three nodes.
+    """
+    nodes, triangles = _mesh_arrays(nodes, triangles)
+    _, area = shape_gradients(nodes, triangles)
+    density = np.asarray(current_density, dtype=float)
+    if density.ndim == 0:
+        density = np.full(len(area), float(density))
+    elif density.shape != (len(area),):
+        raise ValueError(
+            f"current density must be one value, or one value per triangle ({len(area)}), "
+            f"not {density.shape}"
+        )
+    if not np.all(np.isfinite(density)):
+        raise ValueError("current density must be a finite number in every triangle")
+    share = density * area / 3.0
+    return _to_nodes(np.repeat(share[:, None], 3, axis=1), triangles, len(nodes))
+
+
+def magnet_load(
+    nodes: ArrayLike, triangles: ArrayLike, remanence: ArrayLike, reluctivity: ArrayLike
+) -> NDArray[np.float64]:
+    """Load vector of the permanent magnets in the mesh, shape (n,), in amperes.
+
+    A magnet follows B = mu H + Br, that is H = nu (B - Br), with nu its
+    recoil reluctivity. Put into the field equation, the Br term becomes the
+    load f_i = integral of nu (Br_x dN_i/dy - Br_y dN_i/dx). For a uniformly
+    magnetised block this is zero inside and leaves a current sheet of
+    nu (Br x n) amperes per metre on its faces, n being the outward normal:
+    nu Br on a face that runs along the magnetisation, nothing on a face
+    square to it.
+
+    ``remanence`` is (Br_x, Br_y) in tesla: one vector, or one per triangle,
+    shape (m, 2), zero outside the magnets. ``reluctivity`` is the same one
+    the stiffness matrix is built with, one value or one per triangle.
+    """
+    nodes, triangles = _mesh_arrays(nodes, triangles)
+    gradients, area = shape_gradients(nodes, triangles)
+    nu = _reluctivity_per_triangle(reluctivity, len(area))
+    br = np.asarray(remanence, dtype=float)
+    if br.shape == (2,):
+        br = np.tile(br, (len(area), 1))
+    elif br.shape != (len(area), 2):
+        raise ValueError(
+            "remanence must be one vector with x and y parts, or one per triangle "
+            f"({len(area)}, 2), not {br.shape}"
+        )
+    if not np.all(np.isfinite(br)):
+        raise ValueError("remanence must be finite numbers")
+    strength = (nu * area)[:, None] * br  # nu Br times area, (m, 2)
+    local = strength[:, None, 0] * gradients[:, :, 1] - strength[:, None, 1] * gradients[:, :, 0]
+    return _to_nodes(local, triangles, len(nodes))
+
+
 def _fixed_nodes(
     fixed_nodes: ArrayLike, fixed_values: ArrayLike, count: int
 ) -> tuple[NDArray[np.intp], NDArray[np.float64]]:

@@ -10,8 +10,10 @@ from scipy import sparse
 from polecraft.core.materials import MU0
 from polecraft.core.solver import (
     assemble_stiffness,
+    current_load,
     element_stiffness,
     flux_density,
+    magnet_load,
     shape_gradients,
     solve_linear,
 )
@@ -693,6 +695,434 @@ def test_load_must_have_one_value_per_node() -> None:
     matrix = assemble_stiffness(nodes, triangles, 1.0)
     with pytest.raises(ValueError, match="one value per node"):
         solve_linear(matrix, np.zeros(len(nodes) - 1), np.array([0]), 0.0)
+
+
+# Current sources
+
+
+def centres(nodes: np.ndarray, triangles: np.ndarray) -> np.ndarray:
+    return nodes[triangles].mean(axis=1)
+
+
+def disc(sectors: int, wire_radius: float = 1e-3, reach: float = 20.0) -> tuple:
+    """A disc of rings about the origin, with a ring exactly on the wire surface.
+
+    Ring radii grow in proportion to the radius, which keeps the triangles
+    well shaped from the middle of the wire out to about ``reach`` wire
+    radii. Returns nodes, triangles and the outer radius.
+    """
+    growth = 1.0 + 2.0 * math.pi / sectors
+    inner = round(math.log(4.0) / math.log(growth))
+    outer = round(math.log(reach) / math.log(growth))
+    radii = wire_radius * growth ** np.arange(-inner, outer + 1)
+    angles = 2.0 * math.pi * np.arange(sectors) / sectors
+    rings = [np.column_stack([r * np.cos(angles), r * np.sin(angles)]) for r in radii]
+    nodes = np.vstack([[[0.0, 0.0]]] + rings)
+    triangles = []
+    for i in range(sectors):
+        j = (i + 1) % sectors
+        triangles.append((0, 1 + i, 1 + j))
+        for k in range(len(radii) - 1):
+            a, b = 1 + k * sectors + i, 1 + k * sectors + j
+            c, d = b + sectors, a + sectors
+            if (i + k) % 2 == 0:
+                triangles += [(a, d, b), (b, d, c)]
+            else:
+                triangles += [(a, d, c), (a, c, b)]
+    return nodes, np.array(triangles), radii[-1]
+
+
+def wire_solution(sectors: int, current: float = 10.0, wire_radius: float = 1e-3) -> dict:
+    """Field of a round wire on the axis of a disc whose rim is held at A = 0."""
+    nodes, triangles, rim = disc(sectors, wire_radius)
+    centre = centres(nodes, triangles)
+    radius = np.hypot(centre[:, 0], centre[:, 1])
+    inside = radius < wire_radius
+    _, area = shape_gradients(nodes, triangles)
+    # The meshed wire is a polygon; spread the current over its true area.
+    density = np.where(inside, current / area[inside].sum(), 0.0)
+    load = current_load(nodes, triangles, density)
+    node_radius = np.hypot(nodes[:, 0], nodes[:, 1])
+    fixed = np.flatnonzero(np.isclose(node_radius, rim))
+    matrix = assemble_stiffness(nodes, triangles, NU0)
+    a = solve_linear(matrix, load, fixed, 0.0)
+    b = flux_density(nodes, triangles, a)
+    around = np.column_stack([-centre[:, 1], centre[:, 0]]) / radius[:, None]
+    outward = centre / radius[:, None]
+    return {
+        "nodes": nodes, "node_radius": node_radius, "radius": radius, "inside": inside,
+        "a": a, "load": load, "rim": rim, "area": area,
+        "b_around": (b * around).sum(axis=1), "b_outward": (b * outward).sum(axis=1),
+    }
+
+
+def test_current_load_of_one_triangle_is_shared_equally() -> None:
+    nodes = np.array([[0.0, 0.0], [2.0, 0.0], [0.0, 3.0]])
+    load = current_load(nodes, np.array([[0, 1, 2]]), 5.0)
+    assert load == pytest.approx([5.0, 5.0, 5.0])  # 5 A/m2 on 3 m2, a third each
+
+
+def test_current_load_adds_up_to_the_total_current(rough: tuple) -> None:
+    nodes, triangles = rough
+    density = np.random.default_rng(20).uniform(-4e6, 4e6, len(triangles))
+    _, area = shape_gradients(nodes, triangles)
+    load = current_load(nodes, triangles, density)
+    assert load.shape == (len(nodes),)
+    assert load.sum() == pytest.approx((density * area).sum(), rel=1e-12)
+
+
+def test_current_load_is_zero_away_from_the_conductor() -> None:
+    nodes, triangles = grid(6, 6)
+    in_coil = centres(nodes, triangles)[:, 0] < 1.0 / 3.0
+    load = current_load(nodes, triangles, np.where(in_coil, 2.0, 0.0))
+    assert np.all(load[nodes[:, 0] > 0.34] == 0.0)
+    assert np.all(load[nodes[:, 0] < 0.34] > 0.0)
+    assert load.sum() == pytest.approx(2.0 / 3.0)
+
+
+def test_loads_have_one_value_per_node_even_for_unused_nodes() -> None:
+    nodes, triangles = grid(2, 2)
+    nodes = np.vstack([nodes, [[5.0, 5.0]]])
+    for load in (
+        current_load(nodes, triangles, 3.0),
+        magnet_load(nodes, triangles, [0.0, 1.0], NU0),
+    ):
+        assert load.shape == (10,)
+        assert load[9] == 0.0
+
+
+def test_loads_of_a_mesh_without_triangles_are_zero() -> None:
+    nodes = np.zeros((4, 2))
+    none = np.zeros((0, 3), dtype=int)
+    for load in (current_load(nodes, none, 3.0), magnet_load(nodes, none, [0.0, 1.0], NU0)):
+        assert load.dtype == np.float64
+        assert np.array_equal(load, np.zeros(4))
+
+
+def test_current_load_does_not_depend_on_the_numbering_direction(rough: tuple) -> None:
+    nodes, triangles = rough
+    density = np.linspace(-1.0, 2.0, len(triangles))
+    assert current_load(nodes, triangles[:, [0, 2, 1]], density) == pytest.approx(
+        current_load(nodes, triangles, density), rel=1e-12
+    )
+
+
+@pytest.mark.parametrize(
+    ("density", "message"),
+    [
+        (np.ones(5), "one value per triangle"),
+        (np.ones((8, 1)), "one value per triangle"),
+        (math.nan, "finite"),
+        (np.array([1.0] * 7 + [math.inf]), "finite"),
+    ],
+)
+def test_bad_current_density_is_rejected(density: object, message: str) -> None:
+    nodes, triangles = grid(2, 2)
+    with pytest.raises(ValueError, match=f"current density.*{message}"):
+        current_load(nodes, triangles, density)
+
+
+def test_uniform_current_between_two_field_lines() -> None:
+    # A slab carrying J between walls held at A = 0: A = mu0 J x (w - x) / 2,
+    # and B_y = -dA/dx = mu0 J (x - w/2), zero in the middle.
+    width, height, density = 0.02, 0.005, 3e6
+    nodes, triangles = grid(40, 10, width, height)
+    walls = np.flatnonzero((nodes[:, 0] == 0.0) | (nodes[:, 0] == width))
+    matrix = assemble_stiffness(nodes, triangles, NU0)
+    a = solve_linear(matrix, current_load(nodes, triangles, density), walls, 0.0)
+    x = nodes[:, 0]
+    peak = MU0 * density * width**2 / 8.0
+    assert a == pytest.approx(MU0 * density * x * (width - x) / 2.0, abs=2e-3 * peak)
+    b = flux_density(nodes, triangles, a)
+    centre_x = centres(nodes, triangles)[:, 0]
+    edge_field = MU0 * density * width / 2.0
+    assert b[:, 1] == pytest.approx(MU0 * density * (centre_x - width / 2.0), abs=0.03 * edge_field)
+    assert b[:, 0] == pytest.approx(0.0, abs=0.03 * edge_field)
+
+
+@pytest.fixture(scope="module")
+def wire() -> dict:
+    return wire_solution(sectors=64)
+
+
+def test_field_outside_a_round_conductor(wire: dict) -> None:
+    # B = mu0 I / (2 pi r), running counter-clockwise for current out of the plane.
+    # B is constant over a triangle, so it is compared at the triangle centre
+    # and is only first-order accurate: about 1.7 % on this mesh.
+    outside = (wire["radius"] > 1.1e-3) & (wire["radius"] < 0.9 * wire["rim"])
+    expected = MU0 * 10.0 / (2.0 * math.pi * wire["radius"][outside])
+    assert wire["b_around"][outside] == pytest.approx(expected, rel=0.025)
+    assert np.all(wire["b_around"][outside] > 0.0)
+    assert np.abs(wire["b_outward"][outside] / expected).max() < 0.025
+
+
+def test_field_inside_a_round_conductor(wire: dict) -> None:
+    # B = mu0 I r / (2 pi a^2): it rises in proportion to the radius.
+    inside = wire["inside"]
+    surface = MU0 * 10.0 / (2.0 * math.pi * 1e-3)
+    expected = surface * wire["radius"][inside] / 1e-3
+    assert wire["b_around"][inside] == pytest.approx(expected, abs=0.02 * surface)
+    assert np.abs(wire["b_outward"][inside]).max() < 0.02 * surface
+
+
+def test_potential_around_a_round_conductor(wire: dict) -> None:
+    # A = mu0 I / (2 pi) ln(R / r) outside the wire, zero on the rim R.
+    r = wire["node_radius"]
+    outside = r > 1.05e-3
+    expected = MU0 * 10.0 / (2.0 * math.pi) * np.log(wire["rim"] / r[outside])
+    assert wire["a"][outside] == pytest.approx(expected, rel=0.01, abs=1e-3 * expected.max())
+
+
+def test_energy_of_a_round_conductor(wire: dict) -> None:
+    # Per metre: mu0 I^2 / (4 pi) (1/4 + ln(R / a)), inside plus outside the wire.
+    energy = 0.5 * wire["a"] @ wire["load"]
+    expected = MU0 * 10.0**2 / (4.0 * math.pi) * (0.25 + math.log(wire["rim"] / 1e-3))
+    assert energy == pytest.approx(expected, rel=0.005)
+
+
+def test_round_conductor_error_falls_with_a_finer_mesh() -> None:
+    errors, field_errors = [], []
+    for sectors in (24, 48, 96):
+        s = wire_solution(sectors)
+        outside = s["node_radius"] > 1.05e-3
+        exact = MU0 * 10.0 / (2.0 * math.pi) * np.log(s["rim"] / s["node_radius"][outside])
+        errors.append(np.abs(s["a"][outside] - exact).max() / exact.max())
+        ring = (s["radius"] > 1.1e-3) & (s["radius"] < 0.9 * s["rim"])
+        field = MU0 * 10.0 / (2.0 * math.pi * s["radius"][ring])
+        field_errors.append(np.abs(s["b_around"][ring] / field - 1.0).max())
+    # The potential is second order: half the triangle size, a quarter the error.
+    assert errors[0] / errors[1] > 3.0
+    assert errors[1] / errors[2] > 3.0
+    assert errors[2] < 1e-3
+    # The flux density is first order: half the triangle size, half the error.
+    assert 1.8 < field_errors[0] / field_errors[1] < 2.2
+    assert 1.8 < field_errors[1] / field_errors[2] < 2.2
+    assert field_errors[2] < 0.012
+
+
+def test_reversing_the_current_reverses_the_field(rough: tuple) -> None:
+    nodes, triangles = rough
+    density = np.where(centres(nodes, triangles)[:, 0] < 0.4, 2e6, 0.0)
+    edge = np.flatnonzero(on_boundary(nodes))
+    matrix = assemble_stiffness(nodes, triangles, NU0)
+    forward = solve_linear(matrix, current_load(nodes, triangles, density), edge, 0.0)
+    backward = solve_linear(matrix, current_load(nodes, triangles, -density), edge, 0.0)
+    assert np.abs(forward).max() > 0.0
+    assert np.array_equal(backward, -forward)
+    assert np.array_equal(
+        flux_density(nodes, triangles, backward), -flux_density(nodes, triangles, forward)
+    )
+
+
+# Magnet sources
+
+
+def test_uniform_magnet_loads_only_its_surface() -> None:
+    # A uniformly magnetised block acts like a current sheet on its sides.
+    nodes, triangles = grid(8, 8, jitter=0.2, seed=4)
+    load = magnet_load(nodes, triangles, np.array([0.3, -1.1]), NU0 / 1.05)
+    inside = ~on_boundary(nodes)
+    assert np.abs(load[inside]).max() <= 1e-12 * np.abs(load).max()
+    assert np.abs(load[~inside]).max() > 0.0
+    assert load.sum() == pytest.approx(0.0, abs=1e-12 * np.abs(load).max())
+
+
+def test_magnet_load_is_the_equivalent_surface_current() -> None:
+    # Magnetised along +y with M = Br / (mu_r mu0): the sheet current M x n
+    # is M amperes per metre out of the plane on the left face (n = -x), the
+    # same into the plane on the right face, and nothing on the other two.
+    remanence, mu_r, step = 1.2, 1.05, 0.25
+    nodes, triangles = grid(4, 4)
+    load = magnet_load(nodes, triangles, np.array([0.0, remanence]), NU0 / mu_r)
+    m = remanence / (mu_r * MU0)
+    x, y = nodes[:, 0], nodes[:, 1]
+    corner = ((y == 0.0) | (y == 1.0))
+    assert load[(x == 0.0) & ~corner] == pytest.approx(m * step)
+    assert load[(x == 0.0) & corner] == pytest.approx(m * step / 2.0)
+    assert load[(x == 1.0) & ~corner] == pytest.approx(-m * step)
+    assert load[(x == 1.0) & corner] == pytest.approx(-m * step / 2.0)
+    assert load[(x > 0.0) & (x < 1.0)] == pytest.approx(0.0, abs=1e-9 * m)
+
+
+def test_magnet_load_is_zero_outside_the_magnet() -> None:
+    nodes, triangles = grid(6, 6)
+    in_magnet = centres(nodes, triangles)[:, 0] < 1.0 / 3.0
+    remanence = np.where(in_magnet[:, None], [0.0, 1.0], 0.0)
+    load = magnet_load(nodes, triangles, remanence, NU0)
+    assert np.all(load[nodes[:, 0] > 0.34] == 0.0)
+
+
+@pytest.mark.parametrize("angle_deg", [0.0, 90.0, 37.0, 200.0])
+def test_magnet_closed_by_ideal_iron_carries_its_remanence(angle_deg: float) -> None:
+    # Free outside edges behave as ideal iron. A magnet filling the space
+    # inside it is short-circuited: H = 0, so B = Br, whatever its direction.
+    angle = math.radians(angle_deg)
+    remanence = 1.3 * np.array([math.cos(angle), math.sin(angle)])
+    nodes, triangles = grid(7, 5, width=0.03, height=0.01, jitter=0.2, seed=6)
+    nu = NU0 / 1.05
+    matrix = assemble_stiffness(nodes, triangles, nu)
+    load = magnet_load(nodes, triangles, remanence, nu)
+    a = solve_linear(matrix, load, np.array([0]), 0.0)
+    b = flux_density(nodes, triangles, a)
+    assert b == pytest.approx(np.tile(remanence, (len(triangles), 1)), rel=1e-9, abs=1e-9)
+
+
+def test_magnet_closed_in_by_field_lines_carries_no_flux() -> None:
+    # With A = 0 all round, no flux can leave or circulate: B = 0, H = -Br / mu.
+    nodes, triangles = grid(7, 5, jitter=0.2, seed=6)
+    nu = NU0 / 1.05
+    load = magnet_load(nodes, triangles, np.array([0.4, 1.1]), nu)
+    edge = np.flatnonzero(on_boundary(nodes))
+    a = solve_linear(assemble_stiffness(nodes, triangles, nu), load, edge, 0.0)
+    assert np.abs(flux_density(nodes, triangles, a)).max() < 1e-9
+
+
+def magnet_circuit(yoke: float, iron_mu_r: float = 5000.0) -> dict:
+    """Two magnets side by side, one magnetised up and one down, under an air gap.
+
+    The flux goes up through the left magnet and its gap, across the top,
+    down through the right gap and magnet, and back along the bottom. With
+    ``yoke`` = 0 the top and bottom edges are left free, which makes them
+    ideal iron; otherwise iron plates of that thickness are meshed and the
+    whole outside is a field line.
+    """
+    half, magnet, gap, cell = 0.05, 0.004, 0.001, 0.001
+    remanence, mu_r = 1.2, 1.05
+    height = 2.0 * yoke + magnet + gap
+    nodes, triangles = grid(
+        round(2.0 * half / (2.0 * cell)), round(height / cell), 2.0 * half, height
+    )
+    centre = centres(nodes, triangles)
+    y = centre[:, 1] - yoke
+    in_magnet = (y > 0.0) & (y < magnet)
+    in_gap = (y > magnet) & (y < magnet + gap)
+    left = centre[:, 0] < half
+    nu = np.full(len(triangles), NU0 / iron_mu_r)
+    nu[in_magnet] = NU0 / mu_r
+    nu[in_gap] = NU0
+    br = np.zeros((len(triangles), 2))
+    br[in_magnet & left, 1] = remanence
+    br[in_magnet & ~left, 1] = -remanence
+    if yoke:
+        fixed = np.flatnonzero(on_boundary(nodes, 2.0 * half, height))
+    else:
+        fixed = np.flatnonzero((nodes[:, 0] == 0.0) | (nodes[:, 0] == 2.0 * half))
+    matrix = assemble_stiffness(nodes, triangles, nu)
+    a = solve_linear(matrix, magnet_load(nodes, triangles, br, nu), fixed, 0.0)
+    b = flux_density(nodes, triangles, a)
+    # Away from the middle, where the two magnets leak into each other.
+    far = np.abs(centre[:, 0] - half) > 0.5 * half
+    return {
+        "left_gap": b[in_gap & left & far], "right_gap": b[in_gap & ~left & far],
+        "left_magnet": b[in_magnet & left & far],
+        "ideal": remanence / (1.0 + mu_r * gap / magnet),
+    }
+
+
+def test_magnet_with_an_air_gap_in_ideal_iron() -> None:
+    # Magnetic circuit: H_m l_m + H_g g = 0 and the same B in magnet and gap
+    # give B = Br / (1 + mu_r g / l_m) = 1.2 / 1.2625 = 0.9505 T.
+    circuit = magnet_circuit(yoke=0.0)
+    assert circuit["ideal"] == pytest.approx(0.950495, rel=1e-6)
+    assert circuit["left_gap"][:, 1] == pytest.approx(circuit["ideal"], rel=1e-6)
+    assert circuit["left_magnet"][:, 1] == pytest.approx(circuit["ideal"], rel=1e-6)
+    assert circuit["right_gap"][:, 1] == pytest.approx(-circuit["ideal"], rel=1e-6)
+    assert np.abs(circuit["left_gap"][:, 0]).max() < 1e-6
+
+
+def test_magnet_with_an_air_gap_in_real_iron() -> None:
+    # Iron plates of finite permeability add their reluctance to the circuit.
+    # Each plate carries the flux of one 50 mm magnet through 20 mm of iron
+    # over about 50 mm: 0.05 / (mu_r 0.02) per plate, against
+    # (0.001 + 0.004 / 1.05) / 0.05 for each gap and magnet. The gap field
+    # falls by that ratio: 0.52 % for mu_r = 5000 and 5.2 % for mu_r = 500.
+    # The estimate is rough (the flux enters the plate all along its length),
+    # so it is held to a fifth of the drop.
+    for iron_mu_r in (5000.0, 500.0):
+        circuit = magnet_circuit(yoke=0.02, iron_mu_r=iron_mu_r)
+        gap = circuit["left_gap"][:, 1]
+        ratio = (0.05 / (iron_mu_r * 0.02)) / ((0.001 + 0.004 / 1.05) / 0.05)
+        drop = 1.0 - gap.mean() / circuit["ideal"]
+        assert np.all(gap < circuit["ideal"])
+        assert drop == pytest.approx(ratio / (1.0 + ratio), rel=0.2)
+
+
+def test_reversing_the_magnetisation_reverses_the_field(rough: tuple) -> None:
+    nodes, triangles = rough
+    in_magnet = centres(nodes, triangles)[:, 1] < 0.5
+    remanence = np.where(in_magnet[:, None], [0.2, 1.1], 0.0)
+    nu = np.where(in_magnet, NU0 / 1.05, NU0)
+    edge = np.flatnonzero(on_boundary(nodes))
+    matrix = assemble_stiffness(nodes, triangles, nu)
+    forward = solve_linear(matrix, magnet_load(nodes, triangles, remanence, nu), edge, 0.0)
+    backward = solve_linear(matrix, magnet_load(nodes, triangles, -remanence, nu), edge, 0.0)
+    assert np.abs(forward).max() > 0.0
+    assert np.array_equal(backward, -forward)
+
+
+def test_current_and_magnet_fields_add_up(rough: tuple) -> None:
+    nodes, triangles = rough
+    centre = centres(nodes, triangles)
+    in_magnet = centre[:, 1] < 0.4
+    remanence = np.where(in_magnet[:, None], [0.0, 1.1], 0.0)
+    density = np.where(centre[:, 1] > 0.7, 3e6, 0.0)
+    nu = np.where(in_magnet, NU0 / 1.05, NU0)
+    edge = np.flatnonzero(on_boundary(nodes))
+    matrix = assemble_stiffness(nodes, triangles, nu)
+    from_current = current_load(nodes, triangles, density)
+    from_magnet = magnet_load(nodes, triangles, remanence, nu)
+    both = solve_linear(matrix, from_current + from_magnet, edge, 0.0)
+    apart = solve_linear(matrix, from_current, edge, 0.0) + solve_linear(
+        matrix, from_magnet, edge, 0.0
+    )
+    assert both == pytest.approx(apart, rel=1e-9, abs=1e-12 * np.abs(both).max())
+
+
+def test_one_remanence_can_be_given_for_all_triangles() -> None:
+    nodes, triangles = grid(3, 3, jitter=0.2)
+    one = magnet_load(nodes, triangles, [0.5, -0.2], 4.0)
+    each = magnet_load(nodes, triangles, np.tile([0.5, -0.2], (len(triangles), 1)), 4.0)
+    assert np.array_equal(one, each)
+
+
+def test_magnet_load_does_not_depend_on_the_numbering_direction(rough: tuple) -> None:
+    nodes, triangles = rough
+    remanence = np.random.default_rng(21).uniform(-1.0, 1.0, (len(triangles), 2))
+    forward = magnet_load(nodes, triangles, remanence, NU0)
+    backward = magnet_load(nodes, triangles[:, [0, 2, 1]], remanence, NU0)
+    assert backward == pytest.approx(forward, rel=1e-12, abs=1e-12 * np.abs(forward).max())
+
+
+@pytest.mark.parametrize(
+    ("remanence", "message"),
+    [
+        (np.ones(8), "x and y"),
+        (np.ones((5, 2)), "x and y"),
+        (np.ones((8, 3)), "x and y"),
+        ([1.0, math.nan], "finite"),
+    ],
+)
+def test_bad_remanence_is_rejected(remanence: object, message: str) -> None:
+    nodes, triangles = grid(2, 2)
+    with pytest.raises(ValueError, match=f"remanence.*{message}"):
+        magnet_load(nodes, triangles, remanence, NU0)
+
+
+def test_magnet_load_checks_the_reluctivity() -> None:
+    nodes, triangles = grid(2, 2)
+    with pytest.raises(ValueError, match="reluctivity"):
+        magnet_load(nodes, triangles, [0.0, 1.0], -1.0)
+
+
+def test_sources_do_not_change_their_inputs(rough: tuple) -> None:
+    nodes, triangles = rough
+    density = np.full(len(triangles), 2.0)
+    remanence = np.full((len(triangles), 2), 0.5)
+    before = nodes.copy(), triangles.copy(), density.copy(), remanence.copy()
+    current_load(nodes, triangles, density)
+    magnet_load(nodes, triangles, remanence, NU0)
+    for now, then in zip((nodes, triangles, density, remanence), before):
+        assert np.array_equal(now, then)
 
 
 # The reference machine
