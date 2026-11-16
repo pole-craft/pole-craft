@@ -15,17 +15,26 @@ line, so no flux crosses it. An outside edge whose nodes are left free gets
 the natural condition instead: the field crosses it at right angles, as at
 the surface of ideal iron.
 
-This module takes plain arrays (node positions, triangles, one reluctivity
-per triangle), so it does not depend on the mesher.
+The building blocks take plain arrays (node positions, triangles, one
+reluctivity per triangle). ``solve`` takes a ``Problem``, which holds the
+same things together with the material models, and iterates when a material
+saturates. Nothing here knows what kind of machine, if any, the problem
+describes.
 """
 
 from __future__ import annotations
+
+from dataclasses import dataclass
+from typing import TYPE_CHECKING
 
 import numpy as np
 from numpy.typing import ArrayLike, NDArray
 from scipy import sparse
 from scipy.sparse.csgraph import connected_components
 from scipy.sparse.linalg import spsolve
+
+if TYPE_CHECKING:
+    from polecraft.core.problem import Problem
 
 # A triangle whose doubled area is below this fraction of its longest edge
 # squared is treated as having no area.
@@ -120,9 +129,13 @@ def assemble_stiffness(
     """
     nodes, triangles = _mesh_arrays(nodes, triangles)
     local = element_stiffness(nodes, triangles, reluctivity)
+    return _assemble(local, triangles, len(nodes))
+
+
+def _assemble(local: NDArray[np.float64], triangles: NDArray, count: int) -> sparse.csr_matrix:
+    """Add up 3 by 3 matrices of the triangles, shape (m, 3, 3), into one matrix."""
     rows = np.repeat(triangles, 3, axis=1)  # node i of each of the 9 entries
     columns = np.tile(triangles, (1, 3))  # node j
-    count = len(nodes)
     # Converting to CSR adds up the entries that fall on the same node pair.
     matrix = sparse.coo_matrix(
         (local.ravel(), (rows.ravel(), columns.ravel())), shape=(count, count)
@@ -296,6 +309,84 @@ def _couplings(
     return origin, sign
 
 
+class _Reduction:
+    """Fixed values and couplings of a problem, applied to its equations.
+
+    Built once for a set of nodes; then used for every matrix and load on
+    them, which is what the Newton iteration needs.
+    """
+
+    def __init__(
+        self,
+        count: int,
+        fixed_nodes: ArrayLike,
+        fixed_values: ArrayLike,
+        periodic: ArrayLike | None,
+        antiperiodic: bool,
+    ) -> None:
+        self.count = count
+        fixed, values = _fixed_nodes(fixed_nodes, fixed_values, count)
+        self.origin, self.sign = _couplings(periodic, antiperiodic, count)
+        self.own = self.origin == np.arange(count)  # nodes with an equation of their own
+        self.coupled = not np.all(self.own)
+        self.link = None
+        if self.coupled:
+            # a = L a_own, with one entry per row of L: +1 or -1 in the column
+            # of the node's origin. The equations become L^T K L a_own = L^T f.
+            self.link = sparse.csr_matrix(
+                (self.sign, (np.arange(count), self.origin)), shape=(count, count)
+            )
+            fixed, values = _fixed_origins(fixed, values, self.origin, self.sign)
+        self.fixed, self.values = fixed, values
+        self.is_free = self.own.copy()
+        self.is_free[fixed] = False
+        self.free = np.flatnonzero(self.is_free)
+        self._checked = False
+
+    def conform(self, potential: NDArray[np.float64]) -> NDArray[np.float64]:
+        """A potential with the fixed values and couplings put in."""
+        potential = potential.copy()
+        potential[self.fixed] = self.values
+        return self.sign * potential[self.origin] if self.coupled else potential
+
+    def free_part(self, vector: NDArray[np.float64]) -> NDArray[np.float64]:
+        """A nodal vector of currents as seen by the equations that are solved."""
+        if self.coupled:
+            vector = self.link.T @ vector
+        return vector[self.free]
+
+    def free_sum(self, sizes: NDArray[np.float64]) -> NDArray[np.float64]:
+        """As ``free_part``, for sizes that add up whatever the sign of a coupling."""
+        if self.coupled:
+            sizes = abs(self.link).T @ sizes
+        return sizes[self.free]
+
+    def solve(self, matrix: sparse.csr_matrix, f: NDArray[np.float64]) -> NDArray[np.float64]:
+        """The potential at every node for a matrix and a load."""
+        joined = None if self._checked else abs(matrix)  # which nodes are tied, signs aside
+        if self.coupled:
+            if joined is not None:
+                # Two entries of opposite sign can cancel in L^T K L; the
+                # nodes are tied all the same, so ties are counted without signs.
+                joined = abs(self.link).T @ joined @ abs(self.link)
+            matrix = (self.link.T @ matrix @ self.link).tocsr()
+            f = self.link.T @ f
+
+        potential = np.empty(self.count)
+        potential[self.fixed] = self.values
+        if self.free.size:
+            if joined is not None:
+                _check_supported(matrix, joined, self.is_free, self.own)
+                self._checked = True
+            rows = matrix[self.free]
+            # Move the known potentials to the right-hand side: K_ff a_f = f_f - K_fc a_c.
+            right = f[self.free] - rows[:, self.fixed] @ self.values
+            potential[self.free] = spsolve(rows[:, self.free].tocsc(), right)
+        if self.coupled:
+            potential = self.sign * potential[self.origin]
+        return potential
+
+
 def solve_linear(
     stiffness: sparse.spmatrix,
     load: ArrayLike,
@@ -329,37 +420,8 @@ def solve_linear(
         raise ValueError(f"load must have one value per node ({count}), not {f.shape}")
     if not np.all(np.isfinite(f)):
         raise ValueError("load must be a finite number at every node")
-    fixed, values = _fixed_nodes(fixed_nodes, fixed_values, count)
-    origin, sign = _couplings(periodic, antiperiodic, count)
-
-    own = origin == np.arange(count)  # nodes that keep an equation of their own
-    coupled = not np.all(own)
-    joined = abs(matrix)  # which nodes are tied to which, signs aside
-    if coupled:
-        # a = L a_own, with one entry per row of L: +1 or -1 in the column
-        # of the node's origin. The equations become L^T K L a_own = L^T f.
-        link = sparse.csr_matrix((sign, (np.arange(count), origin)), shape=(count, count))
-        matrix = (link.T @ matrix @ link).tocsr()
-        f = link.T @ f
-        fixed, values = _fixed_origins(fixed, values, origin, sign)
-        # Two entries of opposite sign can cancel in L^T K L; the nodes are
-        # tied all the same, so the ties are counted without signs.
-        joined = abs(link).T @ joined @ abs(link)
-
-    potential = np.empty(count)
-    potential[fixed] = values
-    is_free = own.copy()
-    is_free[fixed] = False
-    free = np.flatnonzero(is_free)
-    if free.size:
-        _check_supported(matrix, joined, is_free, own)
-        rows = matrix[free]
-        # Move the known potentials to the right-hand side: K_ff a_f = f_f - K_fc a_c.
-        right = f[free] - rows[:, fixed] @ values
-        potential[free] = spsolve(rows[:, free].tocsc(), right)
-    if coupled:
-        potential = sign * potential[origin]
-    return potential
+    reduction = _Reduction(count, fixed_nodes, fixed_values, periodic, antiperiodic)
+    return reduction.solve(matrix, f)
 
 
 def _fixed_origins(
@@ -407,3 +469,203 @@ def _check_supported(
             f"node {adrift[0]} is in a part of the mesh with no fixed node, "
             "so its potential has no reference"
         )
+
+
+class ConvergenceError(RuntimeError):
+    """The Newton iteration did not reach its tolerance.
+
+    ``residuals`` and ``steps`` are those of ``Solution``, up to where the
+    iteration stopped.
+    """
+
+    def __init__(
+        self, message: str, residuals: tuple[float, ...], steps: tuple[float, ...]
+    ) -> None:
+        self.residuals = residuals
+        self.steps = steps
+        super().__init__(f"{message}\n{_iteration_table(residuals, steps)}")
+
+
+@dataclass(frozen=True, eq=False)
+class Solution:
+    """A solved field and how the iteration got there."""
+
+    potential: NDArray[np.float64]  # (n,) A at the nodes, Wb/m
+    flux_density: NDArray[np.float64]  # (m, 2) B in every triangle, tesla
+    reluctivity: NDArray[np.float64]  # (m,) nu in every triangle at that B, m/H
+    # Out-of-balance current at the start and after each iteration, relative
+    # to the size of the currents being balanced in the final field.
+    residuals: tuple[float, ...]
+    steps: tuple[float, ...]  # relaxation factor of each iteration; 1 is a full Newton step
+
+    @property
+    def iterations(self) -> int:
+        """Number of Newton iterations taken."""
+        return len(self.steps)
+
+    def report(self) -> str:
+        """The residual and relaxation factor of every iteration, as text."""
+        return "\n".join(
+            [
+                "Newton iteration",
+                _iteration_table(self.residuals, self.steps),
+                f"  converged in {self.iterations} iterations",
+            ]
+        )
+
+
+def _iteration_table(residuals: tuple[float, ...], steps: tuple[float, ...]) -> str:
+    lines = ["  iteration   residual    step"]
+    for number, residual in enumerate(residuals):
+        step = f"{steps[number - 1]:8.4f}" if number else ""
+        lines.append(f"  {number:9d}  {residual:.3e}{step}")
+    return "\n".join(lines)
+
+
+# The relaxation factor is halved until the residual falls; below this the
+# iteration gives up.
+SMALLEST_STEP = 1.0 / 1024.0
+
+
+def solve(
+    problem: Problem,
+    start: ArrayLike | None = None,
+    tolerance: float = 1e-10,
+    max_iterations: int = 30,
+) -> Solution:
+    """Solve a field problem, with steel that saturates, by Newton iteration.
+
+    Each iteration solves the problem linearised about the present field,
+    using the slope of every material's BH curve there. The full step is
+    taken if it lowers the out-of-balance current at the free nodes; if
+    not, the step is halved until it does (relaxation), so the residual
+    falls at every iteration. A problem with only linear materials is
+    solved in one iteration.
+
+    The iteration stops when the out-of-balance current is at or below
+    ``tolerance`` times the size of the currents being balanced. The
+    potential is then usually good to a few thousand times ``tolerance``,
+    because steel and air differ so much in reluctivity.
+
+    ``start`` is a potential to begin from, for example the solution of a
+    nearby problem; it defaults to zero. Fixed values and couplings are put
+    into it first.
+
+    A magnetised triangle must have a linear material, as a magnet on its
+    recoil line has.
+
+    Raises ConvergenceError if ``max_iterations`` is not enough, or if no
+    step lowers the residual, which also happens when ``tolerance`` is
+    below what rounding allows (about 1e-13).
+    """
+    if not (np.isfinite(tolerance) and tolerance > 0.0):
+        raise ValueError(f"tolerance must be a positive number, not {tolerance}")
+    if max_iterations < 1:
+        raise ValueError(f"max_iterations must be at least 1, not {max_iterations}")
+    nodes, triangles = _mesh_arrays(problem.nodes, problem.triangles)
+    count = len(nodes)
+    if start is None:
+        potential = np.zeros(count)
+    else:
+        potential = np.array(start, dtype=float)
+        if potential.shape != (count,) or not np.all(np.isfinite(potential)):
+            raise ValueError(f"start must be a finite potential at every node ({count})")
+
+    gradients, area = shape_gradients(nodes, triangles)
+    members = [np.flatnonzero(problem.triangle_material == k) for k in range(len(problem.materials))]
+    magnetised = np.any(problem.remanence != 0.0, axis=1)
+    for number, (material, inside) in enumerate(zip(problem.materials, members)):
+        if not material.linear and np.any(magnetised[inside]):
+            raise ValueError(
+                f"material {number} saturates, so its triangles cannot be magnetised: "
+                "give magnets a linear material"
+            )
+    from_current = current_load(nodes, triangles, problem.current_density)
+    # Per unit reluctivity; the magnets' own reluctivity is put in below.
+    magnet_local = area[:, None] * (
+        problem.remanence[:, None, 0] * gradients[:, :, 1]
+        - problem.remanence[:, None, 1] * gradients[:, :, 0]
+    )
+    reduction = _Reduction(
+        count, problem.fixed_nodes, problem.fixed_values, problem.periodic, problem.antiperiodic
+    )
+
+    def state(a: NDArray[np.float64]) -> dict:
+        """Field, material values and residual for a potential."""
+        slope = np.einsum("ei,eid->ed", a[triangles], gradients)  # grad A
+        b = np.hypot(slope[:, 0], slope[:, 1])
+        nu = np.empty(len(triangles))
+        change = np.empty(len(triangles))
+        for material, inside in zip(problem.materials, members):
+            nu[inside] = material.reluctivity(b[inside])
+            change[inside] = material.reluctivity_derivative(b[inside])
+        # Currents the field asks for at each corner: nu area (grad N . grad A).
+        pull = np.einsum("eid,ed->ei", gradients, slope)
+        wanted = (nu * area)[:, None] * pull
+        load = from_current + _to_nodes(nu[:, None] * magnet_local, triangles, count)
+        out_of_balance = reduction.free_part(_to_nodes(wanted, triangles, count) - load)
+        size = np.linalg.norm(
+            reduction.free_sum(_to_nodes(np.abs(wanted), triangles, count) + np.abs(load))
+        )
+        return {
+            "slope": slope, "b": b, "nu": nu, "change": change, "pull": pull, "load": load,
+            "unbalance": float(np.linalg.norm(out_of_balance)), "size": float(size),
+        }
+
+    potential = reduction.conform(potential)
+    with np.errstate(over="ignore", invalid="ignore"):  # checked just below
+        now = state(potential)
+    if not (np.isfinite(now["unbalance"]) and np.isfinite(now["size"])):
+        raise ValueError("start gives a field too large to work with; use a smaller one")
+    unbalance, steps = [now["unbalance"]], []
+
+    def relative() -> tuple[float, ...]:
+        """The out-of-balance history against the present size of the currents."""
+        return tuple(value / now["size"] if now["size"] > 0.0 else 0.0 for value in unbalance)
+
+    while now["unbalance"] > tolerance * now["size"]:
+        if len(steps) == max_iterations:
+            raise ConvergenceError(
+                f"the field solve did not converge in {max_iterations} iterations: "
+                f"residual {relative()[-1]:.3e}, tolerance {tolerance:.1e}",
+                relative(), tuple(steps),
+            )
+        # Tangent matrix: nu K, plus the change of nu with B. With
+        # q = area (dnu/dB) / B and v = grad N . grad A, the extra term of a
+        # triangle is q v v^T; it vanishes with B.
+        b, pull = now["b"], now["pull"]
+        q = np.divide(area * now["change"], b, out=np.zeros_like(b), where=b > 0.0)
+        local = (now["nu"] * area)[:, None, None] * np.einsum(
+            "eid,ejd->eij", gradients, gradients
+        ) + q[:, None, None] * pull[:, :, None] * pull[:, None, :]
+        tangent = _assemble(local, triangles, count)
+        # Newton step written for the new potential: T a_new = f + (T - nu K) a,
+        # and (T - nu K) a = q B^2 v at each corner.
+        right = now["load"] + _to_nodes((q * b * b)[:, None] * pull, triangles, count)
+        target = reduction.solve(tangent, right)
+
+        step = 1.0
+        while True:
+            trial = target if step == 1.0 else potential + step * (target - potential)
+            new = state(trial)
+            if new["unbalance"] < now["unbalance"]:
+                break
+            step *= 0.5
+            if step < SMALLEST_STEP:
+                raise ConvergenceError(
+                    "the field solve stalled: no step lowers the residual "
+                    f"(residual {relative()[-1]:.3e}, tolerance {tolerance:.1e})",
+                    relative(), tuple(steps),
+                )
+        potential, now = trial, new
+        unbalance.append(now["unbalance"])
+        steps.append(step)
+
+    slope = now["slope"]
+    return Solution(
+        potential=potential,
+        flux_density=np.column_stack([slope[:, 1], -slope[:, 0]]),
+        reluctivity=now["nu"],
+        residuals=relative(),
+        steps=tuple(steps),
+    )

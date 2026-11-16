@@ -5,17 +5,19 @@ inverse of the permeability, as a function of the flux density magnitude B
 (tesla). Air, copper and magnets have a constant reluctivity. Steel follows a
 BH curve, and the Newton iteration also needs d(nu)/dB.
 
-A magnet's remanence is a source term, not part of this model: here a magnet
-is only its recoil permeability.
+A magnet's remanence is a source term for the solver. ``Magnet`` carries it
+together with the recoil permeability, which is what the field sees.
 """
 
 from __future__ import annotations
 
 import math
 from dataclasses import dataclass
+from importlib import resources
 from typing import Protocol
 
 import numpy as np
+import yaml
 from numpy.typing import ArrayLike, NDArray
 from scipy.interpolate import PchipInterpolator
 
@@ -64,6 +66,98 @@ class LinearMaterial:
 
 AIR = LinearMaterial(1.0)
 COPPER = LinearMaterial(1.0)
+
+
+@dataclass(frozen=True)
+class Magnet:
+    """A permanent magnet on its recoil line: B = mu_r mu0 H + Br."""
+
+    remanence: float  # Br in tesla
+    relative_permeability: float = 1.05  # recoil permeability
+
+    def __post_init__(self) -> None:
+        if not (math.isfinite(self.remanence) and self.remanence >= 0.0):
+            raise ValueError(f"remanence must be zero or more, in tesla, not {self.remanence}")
+        LinearMaterial(self.relative_permeability)  # checks the permeability
+
+    @property
+    def linear(self) -> bool:
+        return True
+
+    def reluctivity(self, b: ArrayLike) -> NDArray[np.float64]:
+        """1 / (mu_r mu0) in m/H, in the shape of ``b``."""
+        return np.full(np.shape(b), 1.0 / (self.relative_permeability * MU0))
+
+    def reluctivity_derivative(self, b: ArrayLike) -> NDArray[np.float64]:
+        """Zero, in the shape of ``b``."""
+        return np.zeros(np.shape(b))
+
+
+@dataclass(frozen=True)
+class FrohlichSteel:
+    """A saturating material given by a formula, not by measured data.
+
+    B = mu0 H + Js H / (a + H): the polarisation rises towards ``saturation``
+    (Js, in tesla) and is half of it at ``half_field`` (a, in A/m). The curve
+    starts with permeability mu0 + Js / a and ends with the slope of air. It
+    is for tests and placeholders with a known answer, not a steel grade.
+    """
+
+    saturation: float  # Js in tesla
+    half_field: float  # a in A/m
+
+    def __post_init__(self) -> None:
+        for name, value in (("saturation", self.saturation), ("half_field", self.half_field)):
+            if not (math.isfinite(value) and value > 0.0):
+                raise ValueError(f"{name} must be a positive number, not {value}")
+
+    @property
+    def linear(self) -> bool:
+        return False
+
+    def flux_density(self, h: ArrayLike) -> NDArray[np.float64]:
+        """Flux density B in tesla at field strengths ``h`` in A/m."""
+        h = np.asarray(h, dtype=float)
+        return MU0 * h + self.saturation * h / (self.half_field + h)
+
+    def _terms(self, b: ArrayLike) -> tuple[NDArray, NDArray, NDArray]:
+        """B as an array, and p and the root of the quadratic for H.
+
+        The law is the quadratic mu0 H^2 + p H - a B = 0 with
+        p = mu0 a + Js - B, so H = (root - p) / (2 mu0),
+        root = sqrt(p^2 + 4 mu0 a B). While p is positive that difference
+        cancels badly, and the equal form H = 2 a B / (p + root) is used.
+        """
+        b = np.asarray(b, dtype=float)
+        p = MU0 * self.half_field + self.saturation - b
+        return b, p, np.sqrt(p * p + 4.0 * MU0 * self.half_field * b)
+
+    def field_strength(self, b: ArrayLike) -> NDArray[np.float64]:
+        """Field strength H in A/m at flux density magnitudes ``b`` in tesla."""
+        b, p, root = self._terms(b)
+        return np.where(p > 0.0, 2.0 * self.half_field * b / (p + root), (root - p) / (2.0 * MU0))
+
+    def reluctivity(self, b: ArrayLike) -> NDArray[np.float64]:
+        """Reluctivity H / B in m/H at flux density magnitudes ``b`` in tesla."""
+        b, p, root = self._terms(b)
+        beyond = p <= 0.0  # only above Js, so b is not zero there
+        high = np.divide(root - p, 2.0 * MU0 * b, out=np.zeros_like(root), where=beyond)
+        return np.where(beyond, high, 2.0 * self.half_field / (p + root))
+
+    def reluctivity_derivative(self, b: ArrayLike) -> NDArray[np.float64]:
+        """d(nu)/dB in m/(H T) at flux density magnitudes ``b`` in tesla."""
+        b, p, root = self._terms(b)
+        a = self.half_field
+        beyond = p <= 0.0
+        # Below Js: the derivative of 2 a / (p + root), which has no
+        # cancellation near B = 0.
+        low = 2.0 * a * (root + p - 2.0 * MU0 * a) / (root * (p + root) ** 2)
+        # Above Js: (dH/dB - nu) / B, with dB/dH = mu0 + Js a / (a + H)^2.
+        h = (root - p) / (2.0 * MU0)
+        slope = 1.0 / (MU0 + self.saturation * a / (a + h) ** 2)
+        nu = np.divide(h, b, out=np.zeros_like(root), where=beyond)
+        high = np.divide(slope - nu, b, out=np.zeros_like(root), where=beyond)
+        return np.where(beyond, high, low)
 
 
 class BHCurve:
@@ -170,3 +264,35 @@ def _check_table(b: NDArray[np.float64], h: NDArray[np.float64]) -> None:
                 f"BH table: {name} must increase from row to row; "
                 f"row {row} ({column[row - 1]:g}) is not above row {row - 1} ({column[row - 2]:g})"
             )
+
+
+def material_names() -> list[str]:
+    """Names of the materials in the library shipped with the package."""
+    folder = resources.files("polecraft.data").joinpath("materials")
+    return sorted(
+        entry.name[: -len(".yaml")] for entry in folder.iterdir() if entry.name.endswith(".yaml")
+    )
+
+
+def load_material(name: str) -> BHCurve:
+    """Load a material from the library by name.
+
+    Only steels given by a BH table are in the library so far. Raises
+    ValueError for a name that is not there.
+    """
+    names = material_names()
+    if name not in names:
+        raise ValueError(f"unknown material '{name}'; the library has: {', '.join(names)}")
+    entry = resources.files("polecraft.data").joinpath("materials", f"{name}.yaml")
+    data = yaml.safe_load(entry.read_text(encoding="utf-8"))
+    if not isinstance(data, dict) or data.get("kind") != "steel":
+        raise ValueError(f"material file {name}.yaml: only 'kind: steel' is supported so far")
+    try:
+        table = np.array(data["bh_curve"], dtype=float)
+    except (KeyError, TypeError, ValueError):
+        raise ValueError(
+            f"material file {name}.yaml: 'bh_curve' must be a list of [B, H] rows"
+        ) from None
+    if table.ndim != 2 or table.shape[1] != 2:
+        raise ValueError(f"material file {name}.yaml: 'bh_curve' must be a list of [B, H] rows")
+    return BHCurve(table[:, 0], table[:, 1])

@@ -1,0 +1,44 @@
+# PLACEHOLDER. THIS IS NOT REAL STEEL DATA.
+#
+# These numbers do not come from any steel maker, datasheet or measurement,
+# and they do not describe M270-35A or any other grade. Every row is worked
+# out from one formula (a Frohlich law):
+#
+#     B = mu0 * H + Js * H / (a + H),   Js = 2.0 T,   a = 300 A/m
+#
+# The curve has the general shape of a non-oriented electrical steel, which
+# is enough to exercise the solver. Do not use it to design a motor, and do
+# not compare results made with it against other tools or measurements.
+# Measured curves for real grades will be added to this folder with their
+# source.
+name: generic_35A_placeholder
+kind: steel
+description: Placeholder curve from a formula. Not real steel data.
+formula: B = mu0 * H + 2.0 * H / (300 + H)
+# Rows are [B in tesla, H in A/m].
+bh_curve:
+  - [0.000000, 0]
+  - [0.153878, 25]
+  - [0.285777, 50]
+  - [0.400094, 75]
+  - [0.500126, 100]
+  - [0.666855, 150]
+  - [0.800251, 200]
+  - [1.000377, 300]
+  - [1.143360, 400]
+  - [1.334087, 600]
+  - [1.455551, 800]
+  - [1.539718, 1000]
+  - [1.668552, 1500]
+  - [1.741644, 2000]
+  - [1.821952, 3000]
+  - [1.893076, 5000]
+  - [1.932502, 7500]
+  - [1.954314, 10000]
+  - [1.979634, 15000]
+  - [1.995576, 20000]
+  - [2.017897, 30000]
+  - [2.050903, 50000]
+  - [2.119682, 100000]
+  - [2.248332, 200000]
+  - [2.374993, 300000]

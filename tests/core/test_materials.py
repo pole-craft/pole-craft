@@ -1,11 +1,23 @@
 """Material model for the solver: reluctivity against flux density."""
 
 import math
+from importlib import resources
+from pathlib import Path
 
 import numpy as np
 import pytest
 
-from polecraft.core.materials import AIR, COPPER, MU0, BHCurve, LinearMaterial
+from polecraft.core.materials import (
+    AIR,
+    COPPER,
+    MU0,
+    BHCurve,
+    FrohlichSteel,
+    LinearMaterial,
+    Magnet,
+    load_material,
+    material_names,
+)
 
 # A typical non-oriented electrical steel, in tesla and A/m. The values are
 # illustrative, not a datasheet.
@@ -297,3 +309,194 @@ def test_bad_tables_are_rejected(b: list, h: list, message: str) -> None:
 def test_bad_table_message_names_the_row() -> None:
     with pytest.raises(ValueError, match="row 3"):
         BHCurve([0.0, 1.0, 0.9, 1.5], [0.0, 100.0, 200.0, 300.0])
+
+
+# Magnets
+
+
+def test_magnet_keeps_its_remanence_and_recoil_permeability() -> None:
+    magnet = Magnet(remanence=1.2, relative_permeability=1.05)
+    assert magnet.remanence == 1.2
+    assert magnet.linear
+    assert magnet.reluctivity(np.array([0.0, 0.9])) == pytest.approx(1.0 / (1.05 * MU0))
+    assert np.all(magnet.reluctivity_derivative(np.array([0.0, 0.9])) == 0.0)
+
+
+def test_magnet_with_no_remanence_is_allowed() -> None:
+    assert Magnet(remanence=0.0).remanence == 0.0
+
+
+def test_magnet_recoil_permeability_has_a_usual_default() -> None:
+    assert Magnet(remanence=1.0).relative_permeability == pytest.approx(1.05)
+
+
+@pytest.mark.parametrize("remanence", [-0.1, math.nan, math.inf])
+def test_magnet_rejects_impossible_remanence(remanence: float) -> None:
+    with pytest.raises(ValueError, match="remanence"):
+        Magnet(remanence=remanence)
+
+
+def test_magnet_rejects_impossible_permeability() -> None:
+    with pytest.raises(ValueError, match="relative permeability"):
+        Magnet(remanence=1.2, relative_permeability=0.0)
+
+
+# Analytical saturation law
+
+
+@pytest.fixture
+def law() -> FrohlichSteel:
+    return FrohlichSteel(saturation=2.0, half_field=300.0)
+
+
+def test_law_is_b_equals_mu0_h_plus_a_saturating_polarisation(law: FrohlichSteel) -> None:
+    h = np.array([0.0, 10.0, 300.0, 5e3, 1e5, 1e7])
+    expected = MU0 * h + 2.0 * h / (300.0 + h)
+    assert law.flux_density(h) == pytest.approx(expected, rel=1e-14)
+    # Half the saturation polarisation is reached at the half field.
+    assert law.flux_density(300.0) - MU0 * 300.0 == pytest.approx(1.0)
+
+
+def test_law_field_strength_inverts_flux_density(law: FrohlichSteel) -> None:
+    h = np.concatenate([[0.0], np.logspace(-3, 8, 300)])
+    assert law.field_strength(law.flux_density(h)) == pytest.approx(h, rel=1e-9, abs=1e-12)
+
+
+def test_law_says_it_is_not_linear(law: FrohlichSteel) -> None:
+    assert not law.linear
+
+
+def test_law_reluctivity_is_h_over_b(law: FrohlichSteel) -> None:
+    b = np.linspace(0.01, 4.0, 400)
+    assert law.reluctivity(b) * b == pytest.approx(law.field_strength(b), rel=1e-12)
+
+
+def test_law_starts_at_its_initial_permeability(law: FrohlichSteel) -> None:
+    # For small fields B = (mu0 + Js / a) H.
+    initial = 1.0 / (MU0 + 2.0 / 300.0)
+    assert law.reluctivity(0.0) == pytest.approx(initial, rel=1e-12)
+    assert law.reluctivity(1e-9) == pytest.approx(initial, rel=1e-6)
+
+
+def test_law_ends_with_the_slope_of_air(law: FrohlichSteel) -> None:
+    b = np.array([50.0, 50.001])
+    slope = np.diff(law.field_strength(b)) / np.diff(b)
+    assert slope[0] == pytest.approx(1.0 / MU0, rel=1e-3)
+    assert np.all(law.reluctivity(np.linspace(0.0, 100.0, 500)) < 1.0 / MU0)
+
+
+def test_law_gets_stiffer_all_the_way(law: FrohlichSteel) -> None:
+    b = np.linspace(0.0, 5.0, 2000)
+    assert np.all(np.diff(law.reluctivity(b)) > 0.0)
+    assert np.all(law.reluctivity_derivative(b) > 0.0)
+    assert np.all(np.diff(law.field_strength(b)) > 0.0)
+
+
+def test_law_derivative_matches_a_finite_difference(law: FrohlichSteel) -> None:
+    b = np.linspace(0.02, 4.0, 700)
+    step = 1e-6
+    numeric = (law.reluctivity(b + step) - law.reluctivity(b - step)) / (2.0 * step)
+    analytic = law.reluctivity_derivative(b)
+    assert analytic == pytest.approx(numeric, rel=1e-5, abs=1e-7 * np.abs(analytic).max())
+
+
+def test_law_derivative_at_zero_is_the_limit_from_above(law: FrohlichSteel) -> None:
+    at_zero = law.reluctivity_derivative(0.0)
+    assert np.isfinite(at_zero)
+    assert at_zero == pytest.approx(law.reluctivity_derivative(1e-6), rel=1e-4)
+
+
+@pytest.mark.parametrize("shape", [(), (5,), (3, 4)])
+def test_law_results_have_the_shape_of_the_input(law: FrohlichSteel, shape: tuple) -> None:
+    b = np.full(shape, 1.35)
+    for result in (law.field_strength(b), law.reluctivity(b), law.reluctivity_derivative(b)):
+        assert result.shape == shape
+
+
+@pytest.mark.parametrize(
+    ("saturation", "half_field"), [(0.0, 300.0), (-1.0, 300.0), (2.0, 0.0), (math.nan, 300.0)]
+)
+def test_law_rejects_impossible_values(saturation: float, half_field: float) -> None:
+    with pytest.raises(ValueError, match="positive"):
+        FrohlichSteel(saturation=saturation, half_field=half_field)
+
+
+# Material files
+
+
+def test_placeholder_steel_loads_as_a_bh_curve() -> None:
+    steel = load_material("generic_35A_placeholder")
+    assert isinstance(steel, BHCurve)
+    assert not steel.linear
+    assert steel.b[-1] > 2.2  # reaches well past any flux density in a motor
+
+
+def test_placeholder_steel_is_the_analytical_law_and_nothing_else() -> None:
+    # The file is not steel data: every row comes from one formula.
+    steel = load_material("generic_35A_placeholder")
+    law = FrohlichSteel(saturation=2.0, half_field=300.0)
+    assert steel.b == pytest.approx(law.flux_density(steel.h), abs=5e-7)
+
+
+def test_placeholder_steel_follows_the_law_between_its_rows() -> None:
+    steel = load_material("generic_35A_placeholder")
+    law = FrohlichSteel(saturation=2.0, half_field=300.0)
+    b = np.linspace(0.05, 2.3, 400)
+    # Between rows the table is interpolated, so it is close, not equal:
+    # within 4 % below the first row and within 1 % above it.
+    assert steel.field_strength(b) == pytest.approx(law.field_strength(b), rel=0.05)
+    above = b > steel.b[1]
+    assert steel.field_strength(b[above]) == pytest.approx(law.field_strength(b[above]), rel=0.01)
+
+
+def test_placeholder_steel_ends_close_to_the_slope_of_air() -> None:
+    steel = load_material("generic_35A_placeholder")
+    b = np.array([3.0, 3.5])
+    slope = np.diff(steel.field_strength(b)) / np.diff(b)
+    assert slope[0] == pytest.approx(1.0 / MU0, rel=0.02)
+
+
+def test_placeholder_file_says_it_is_not_real_data() -> None:
+    text = resources.files("polecraft.data").joinpath(
+        "materials", "generic_35A_placeholder.yaml"
+    ).read_text(encoding="utf-8")
+    assert "not real steel data" in text.lower()
+    assert "placeholder" in text.lower()
+
+
+def test_no_real_steel_grade_is_shipped_yet() -> None:
+    names = material_names()
+    assert names == ["generic_35A_placeholder"]
+
+
+def test_unknown_material_is_rejected_with_the_known_names() -> None:
+    with pytest.raises(ValueError, match="M270-35A.*generic_35A_placeholder"):
+        load_material("M270-35A")
+
+
+@pytest.mark.parametrize("name", ["../secrets", "a/b", "", "x.yaml"])
+def test_material_names_cannot_be_paths(name: str) -> None:
+    with pytest.raises(ValueError, match="material"):
+        load_material(name)
+
+
+@pytest.mark.parametrize(
+    ("text", "message"),
+    [
+        ("kind: magnet\nbh_curve: [[0, 0], [1, 100]]\n", "only 'kind: steel'"),
+        ("- just\n- a list\n", "only 'kind: steel'"),
+        ("kind: steel\n", "'bh_curve' must be a list"),
+        ("kind: steel\nbh_curve: [[0, 0, 0], [1, 100, 5]]\n", "'bh_curve' must be a list"),
+        ("kind: steel\nbh_curve: [[0, 0], [1, x]]\n", "'bh_curve' must be a list"),
+        ("kind: steel\nbh_curve: [[0, 0], [1, 100], [0.9, 200]]\n", "flux density must increase"),
+    ],
+)
+def test_a_bad_material_file_is_rejected(
+    text: str, message: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    (tmp_path / "materials").mkdir()
+    (tmp_path / "materials" / "broken.yaml").write_text(text, encoding="utf-8")
+    monkeypatch.setattr(resources, "files", lambda package: tmp_path)
+    assert material_names() == ["broken"]
+    with pytest.raises(ValueError, match=message):
+        load_material("broken")

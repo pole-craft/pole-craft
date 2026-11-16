@@ -11,14 +11,21 @@ releases.
 
 - Material model for the field solver (`polecraft.core.materials`):
   reluctivity against flux density, and its derivative, from a BH table for
-  steel, and constant permeability for air, copper and magnets.
-- First part of the field solver (`polecraft.core.solver`): the stiffness
-  matrix for the vector potential on first-order triangles, a solve with
-  fixed-value boundaries and with periodic or anti-periodic coupling of the
-  cut edges of a slice, and the flux density in every triangle. Sources
-  are a current density in conductors and the remanence of permanent
-  magnets. It works on plain mesh arrays and is not connected to a motor
-  design yet, and steel is not yet saturated.
+  steel; constant permeability for air and copper; magnets by remanence and
+  recoil permeability; and a saturation law given by a formula, for tests.
+- A placeholder steel curve, `generic_35A_placeholder`, in the material
+  folder. It is worked out from a formula and is not data for any real
+  steel; measured curves come later.
+- Field solver (`polecraft.core.solver`): the vector potential on
+  first-order triangles, with current density in conductors and the
+  remanence of permanent magnets as sources, fixed-value boundaries, and
+  periodic or anti-periodic coupling of the cut edges of a slice. Steel
+  that saturates is solved by Newton iteration with relaxation, with a
+  report of the residual at every iteration.
+- `polecraft.core.problem`: builds the solver's problem for a machine on
+  its mesh (material, current density and magnetisation of every triangle,
+  boundary nodes and slice coupling) at rotor angle 0. The same problem
+  object can be put together by hand from arrays.
 
 ### Changed
 
