@@ -2,7 +2,7 @@
 
 Open-source design and simulation tool for quasi-direct-drive (QDD) motors.
 
-> **Status: early development.** Design files can be loaded and checked, the winding layout and symmetry slice are worked out from the slot and pole counts, and the cross-section of an outer-rotor motor is built as labelled regions (steel, coils, magnets, air) and meshed with triangles. There is no simulation yet; the plan below describes what is being built.
+> **Status: early development.** Design files can be loaded and checked, the winding layout and symmetry slice are worked out from the slot and pole counts, and the cross-section of an outer-rotor motor is built as labelled regions (steel, coils, magnets, air), meshed with triangles and saved as a picture by the `polecraft mesh` command. There is no simulation yet; the plan below describes what is being built.
 
 ## What it will do
 
@@ -48,6 +48,18 @@ pytest
 ```
 
 The `mesh` extra installs [Gmsh](https://gmsh.info), which is GPL-licensed and optional. Without it everything except meshing works, and the meshing tests are skipped.
+
+## Try it
+
+With the `mesh` extra installed, mesh one of the example designs and save a picture of it:
+
+```
+polecraft mesh designs/qdd_outer_36s42p.yaml
+```
+
+This writes `qdd_outer_36s42p_mesh.png` in the current folder and prints the mesh size and how long each stage took. Add `--full` for the whole machine instead of the slice that repeats, `-o` to choose the output file, and `--size 0.5` for a finer mesh.
+
+The design files in [designs/](designs/) are plain YAML. Their dimensions are placeholders typical of each motor size, not measured or optimised designs.
 
 ## Contributing
 

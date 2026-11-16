@@ -218,3 +218,8 @@ __marimo__/
 
 # Streamlit
 .streamlit/secrets.toml
+
+# Pictures written by the polecraft mesh command
+/*_mesh.png
+/*_mesh.svg
+/*_mesh.pdf

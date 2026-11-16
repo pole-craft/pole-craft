@@ -33,6 +33,9 @@ dependencies = [
 mesh = ["gmsh>=4.11"]
 dev = ["pytest>=8.0"]
 
+[project.scripts]
+polecraft = "polecraft.cli:main"
+
 [tool.setuptools.dynamic]
 version = { attr = "polecraft.__version__" }
 
