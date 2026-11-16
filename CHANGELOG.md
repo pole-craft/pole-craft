@@ -14,7 +14,8 @@ releases.
   steel, and constant permeability for air, copper and magnets.
 - First part of the field solver (`polecraft.core.solver`): the stiffness
   matrix for the vector potential on first-order triangles, a solve with
-  fixed-value boundaries, and the flux density in every triangle. Sources
+  fixed-value boundaries and with periodic or anti-periodic coupling of the
+  cut edges of a slice, and the flux density in every triangle. Sources
   are a current density in conductors and the remanence of permanent
   magnets. It works on plain mesh arrays and is not connected to a motor
   design yet, and steel is not yet saturated.

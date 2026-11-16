@@ -1125,6 +1125,366 @@ def test_sources_do_not_change_their_inputs(rough: tuple) -> None:
         assert np.array_equal(now, then)
 
 
+# Periodic boundaries
+
+
+def annulus(poles: int, model_poles: int, per_pole: int = 8, rows: int = 10) -> dict:
+    """Part of a ring machine: iron, magnets, air, a current layer, iron.
+
+    ``poles`` is the pole count of the whole ring and ``model_poles`` how
+    many of them are meshed, starting at angle 0. A model of all the poles
+    is a closed ring; a smaller one is a slice with a node on both cut
+    edges. Magnets are magnetised along the radius, outwards and inwards in
+    turn, and the current layer alternates with them, a quarter pole early.
+    Node (i, k) is at the same place in every model of the same ring.
+    """
+    closed = model_poles == poles
+    columns = model_poles * per_pole
+    around = columns if closed else columns + 1
+    radii = np.linspace(0.03, 0.05, rows + 1)
+    angles = 2.0 * math.pi * np.arange(around) / (poles * per_pole)
+    nodes = np.array([[r * math.cos(t), r * math.sin(t)] for t in angles for r in radii])
+    triangles = []
+    for i in range(columns):
+        j = (i + 1) % around
+        for k in range(rows):
+            a, b = i * (rows + 1) + k, j * (rows + 1) + k
+            c, d = b + 1, a + 1
+            if (i + k) % 2 == 0:
+                triangles += [(a, b, c), (a, c, d)]
+            else:
+                triangles += [(a, b, d), (b, c, d)]
+    triangles = np.array(triangles)
+
+    centre = centres(nodes, triangles)
+    layer = np.repeat(np.tile(np.arange(rows), columns), 2)  # radial layer of each triangle
+    column = np.repeat(np.arange(columns), 2 * rows)
+    pole = column // per_pole
+    early = ((column + per_pole // 4) // per_pole) % 2
+    is_magnet = (layer >= 2) & (layer < 5)
+    is_coil = (layer >= 6) & (layer < 8)
+    is_iron = (layer < 2) | (layer >= 8)
+    nu = np.where(is_iron, NU0 / 1000.0, np.where(is_magnet, NU0 / 1.05, NU0))
+    outward = centre / np.linalg.norm(centre, axis=1)[:, None]
+    remanence = np.where(is_magnet[:, None], 1.2 * (1 - 2 * (pole % 2))[:, None] * outward, 0.0)
+    density = np.where(is_coil, 4e6 * (1 - 2 * early), 0.0)
+
+    node_layer = np.tile(np.arange(rows + 1), around)
+    return {
+        "nodes": nodes, "triangles": triangles, "nu": nu,
+        "load": current_load(nodes, triangles, density)
+        + magnet_load(nodes, triangles, remanence, nu),
+        "fixed": np.flatnonzero((node_layer == 0) | (node_layer == rows)),
+        # Far cut edge paired with the near cut edge, node by node.
+        "pairs": np.column_stack(
+            [np.arange(columns * (rows + 1), (columns + 1) * (rows + 1)), np.arange(rows + 1)]
+        ),
+        "per_slice": columns * (rows + 1),
+    }
+
+
+def solve_annulus(model: dict, **ties: object) -> np.ndarray:
+    matrix = assemble_stiffness(model["nodes"], model["triangles"], model["nu"])
+    return solve_linear(matrix, model["load"], model["fixed"], 0.0, **ties)
+
+
+@pytest.fixture(scope="module")
+def whole_ring() -> np.ndarray:
+    """Potential of the whole eight-pole ring, with no symmetry used."""
+    a = solve_annulus(annulus(8, 8))
+    assert np.abs(a).max() > 1e-4
+    return a
+
+
+def test_two_pole_slice_with_periodic_edges_matches_the_whole_ring(whole_ring: np.ndarray) -> None:
+    model = annulus(8, 2)
+    a = solve_annulus(model, periodic=model["pairs"])
+    assert a == pytest.approx(
+        whole_ring[: len(a)], rel=1e-9, abs=1e-9 * np.abs(whole_ring).max()
+    )
+
+
+def test_one_pole_slice_with_antiperiodic_edges_matches_the_whole_ring(
+    whole_ring: np.ndarray,
+) -> None:
+    model = annulus(8, 1)
+    a = solve_annulus(model, periodic=model["pairs"], antiperiodic=True)
+    assert a == pytest.approx(
+        whole_ring[: len(a)], rel=1e-9, abs=1e-9 * np.abs(whole_ring).max()
+    )
+
+
+def test_three_pole_slice_with_antiperiodic_edges_matches_the_whole_ring() -> None:
+    # An odd number of poles in the slice: the next slice is this one reversed.
+    whole = solve_annulus(annulus(6, 6))
+    model = annulus(6, 3)
+    a = solve_annulus(model, periodic=model["pairs"], antiperiodic=True)
+    assert a == pytest.approx(whole[: len(a)], rel=1e-9, abs=1e-9 * np.abs(whole).max())
+
+
+def test_the_wrong_kind_of_coupling_gives_a_different_field(whole_ring: np.ndarray) -> None:
+    scale = np.abs(whole_ring).max()
+    one = annulus(8, 1)
+    periodic = solve_annulus(one, periodic=one["pairs"])
+    assert np.abs(periodic - whole_ring[: len(periodic)]).max() > 0.1 * scale
+    two = annulus(8, 2)
+    reversed_ = solve_annulus(two, periodic=two["pairs"], antiperiodic=True)
+    assert np.abs(reversed_ - whole_ring[: len(reversed_)]).max() > 0.1 * scale
+    free = solve_annulus(one)  # cut edges left free
+    assert np.abs(free - whole_ring[: len(free)]).max() > 0.1 * scale
+
+
+def test_the_whole_ring_repeats_as_the_coupling_assumes(whole_ring: np.ndarray) -> None:
+    per_pole = annulus(8, 1)["per_slice"]
+    one, next_one, third = (whole_ring[k * per_pole : (k + 1) * per_pole] for k in range(3))
+    scale = np.abs(whole_ring).max()
+    assert next_one == pytest.approx(-one, rel=1e-9, abs=1e-9 * scale)
+    assert third == pytest.approx(one, rel=1e-9, abs=1e-9 * scale)
+
+
+def test_coupled_nodes_carry_the_same_value_or_its_opposite() -> None:
+    model = annulus(8, 1)
+    far, near = model["pairs"].T
+    a = solve_annulus(model, periodic=model["pairs"], antiperiodic=True)
+    assert np.abs(a[near]).max() > 0.0
+    assert np.array_equal(a[far], -a[near])
+    model = annulus(8, 2)
+    far, near = model["pairs"].T
+    a = solve_annulus(model, periodic=model["pairs"])
+    assert np.array_equal(a[far], a[near])
+
+
+def test_slice_flux_density_matches_the_whole_ring(whole_ring: np.ndarray) -> None:
+    whole, model = annulus(8, 8), annulus(8, 1)
+    a = solve_annulus(model, periodic=model["pairs"], antiperiodic=True)
+    b = flux_density(model["nodes"], model["triangles"], a)
+    b_whole = flux_density(whole["nodes"], whole["triangles"], whole_ring)
+    assert np.abs(b).max() > 0.5  # a field of ordinary motor size
+    assert b == pytest.approx(b_whole[: len(b)], rel=1e-8, abs=1e-8)
+
+
+def test_coupled_nodes_share_one_equation() -> None:
+    # The currents fed in at a node and at its copy balance together, not apart.
+    model = annulus(8, 2)
+    far, near = model["pairs"].T
+    matrix = assemble_stiffness(model["nodes"], model["triangles"], model["nu"])
+    a = solve_linear(matrix, model["load"], model["fixed"], 0.0, model["pairs"])
+    residual = matrix @ a - model["load"]
+    free = ~np.isin(near, model["fixed"])
+    scale = np.abs(model["load"]).max()
+    assert np.abs(residual[near[free]] + residual[far[free]]).max() < 1e-9 * scale
+    assert np.abs(residual[near[free]]).max() > 1e-3 * scale
+
+
+def test_periodic_patch_test() -> None:
+    # Flux crossing the cut edges of a rectangle from left to right: the
+    # uniform field between two fixed edges, with irregular triangles.
+    width, height, flux = 0.03, 0.008, 4e-3
+    nodes, triangles = grid(12, 5, width, height, jitter=0.2, seed=2)
+    bottom = np.flatnonzero(nodes[:, 1] == 0.0)
+    top = np.flatnonzero(nodes[:, 1] == height)
+    right = np.flatnonzero(nodes[:, 0] == width)
+    left = np.flatnonzero(nodes[:, 0] == 0.0)
+    assert np.array_equal(nodes[right, 1], nodes[left, 1])
+    a = solve_linear(
+        assemble_stiffness(nodes, triangles, NU0),
+        np.zeros(len(nodes)),
+        np.concatenate([bottom, top]),
+        np.concatenate([np.zeros(len(bottom)), np.full(len(top), flux)]),
+        periodic=np.column_stack([right, left]),
+    )
+    assert a == pytest.approx(flux * nodes[:, 1] / height, rel=1e-11, abs=1e-14)
+
+
+def test_no_pairs_means_no_coupling(rough: tuple) -> None:
+    nodes, triangles = rough
+    matrix = assemble_stiffness(nodes, triangles, NU0)
+    load = np.random.default_rng(30).uniform(-1.0, 1.0, len(nodes))
+    edge = np.flatnonzero(on_boundary(nodes))
+    plain = solve_linear(matrix, load, edge, 0.5)
+    assert np.array_equal(solve_linear(matrix, load, edge, 0.5, periodic=None), plain)
+    none = np.zeros((0, 2), dtype=int)
+    assert np.array_equal(solve_linear(matrix, load, edge, 0.5, periodic=none), plain)
+    assert np.array_equal(
+        solve_linear(matrix, load, edge, 0.5, periodic=none, antiperiodic=True), plain
+    )
+
+
+def strip() -> tuple:
+    """A strip of three cells in a row, fixed along the bottom, with a load."""
+    nodes, triangles = grid(3, 2)
+    matrix = assemble_stiffness(nodes, triangles, 1.0)
+    load = np.random.default_rng(31).uniform(-1.0, 1.0, len(nodes))
+    return nodes, matrix, load, np.flatnonzero(nodes[:, 1] == 0.0)
+
+
+def column(nodes: np.ndarray, index: int) -> np.ndarray:
+    """Nodes at x = index / 3, bottom to top."""
+    return np.flatnonzero(np.isclose(nodes[:, 0], index / 3.0))
+
+
+@pytest.mark.parametrize("antiperiodic", [False, True])
+def test_a_copy_of_a_copy_follows_the_first_node(antiperiodic: bool) -> None:
+    nodes, matrix, load, bottom = strip()
+    first, second, third = column(nodes, 0), column(nodes, 1), column(nodes, 2)
+    chain = np.vstack([np.column_stack([third, second]), np.column_stack([second, first])])
+    a = solve_linear(matrix, load, bottom, 0.0, chain, antiperiodic)
+    sign = -1.0 if antiperiodic else 1.0
+    assert np.abs(a[first]).max() > 0.0
+    assert np.array_equal(a[second], sign * a[first])
+    assert np.array_equal(a[third], a[first])  # two steps: the sign comes back
+    if not antiperiodic:
+        # The same ties written straight to the first node, in the other order.
+        direct = np.vstack([np.column_stack([second, first]), np.column_stack([third, first])])
+        assert solve_linear(matrix, load, bottom, 0.0, direct) == pytest.approx(a, rel=1e-12)
+
+
+@pytest.mark.parametrize("antiperiodic", [False, True])
+def test_a_long_chain_of_copies_follows_the_first_node(antiperiodic: bool) -> None:
+    # Seven columns, each the copy of the one before it.
+    nodes, triangles = grid(7, 2)
+    matrix = assemble_stiffness(nodes, triangles, 1.0)
+    load = np.random.default_rng(32).uniform(-1.0, 1.0, len(nodes))
+    columns = [np.flatnonzero(np.isclose(nodes[:, 0], k / 7.0)) for k in range(8)]
+    chain = np.vstack([np.column_stack([columns[k], columns[k - 1]]) for k in range(7, 0, -1)])
+    bottom = np.flatnonzero(nodes[:, 1] == 0.0)
+    a = solve_linear(matrix, load, bottom, 0.0, chain, antiperiodic)
+    assert np.abs(a[columns[0]]).max() > 0.0
+    for k in range(1, 8):
+        sign = -1.0 if antiperiodic and k % 2 else 1.0
+        assert np.array_equal(a[columns[k]], sign * a[columns[0]])
+
+
+def two_strips() -> tuple:
+    """Two separate strips in one mesh: nodes 0 to 11 and 12 to 23."""
+    nodes, triangles = grid(3, 2)
+    both = np.vstack([nodes, nodes + [5.0, 0.0]])
+    matrix = assemble_stiffness(both, np.vstack([triangles, triangles + len(nodes)]), 1.0)
+    load = np.random.default_rng(33).uniform(-1.0, 1.0, len(both))
+    return both, matrix, load
+
+
+def test_coupling_can_hold_a_part_with_no_fixed_node_of_its_own() -> None:
+    # The second strip is tied to the first along one edge, and only the
+    # first has fixed nodes.
+    nodes, matrix, load = two_strips()
+    # Left edge of the second strip copied from the right edge of the first.
+    pairs = np.column_stack([column(nodes, 15), column(nodes, 3)])
+    bottom = np.flatnonzero((nodes[:, 1] == 0.0) & (nodes[:, 0] < 2.0))
+    a = solve_linear(matrix, load, bottom, 0.0, pairs)
+    assert np.all(np.isfinite(a))
+    assert np.abs(a[12:]).max() > 0.0
+    assert np.array_equal(a[pairs[:, 0]], a[pairs[:, 1]])
+
+
+def test_a_part_coupled_only_to_itself_still_needs_a_fixed_node() -> None:
+    nodes, matrix, load = two_strips()
+    # Right edge of the second strip copied from its own left edge.
+    pairs = np.column_stack([column(nodes, 18), column(nodes, 15)])
+    bottom = np.flatnonzero((nodes[:, 1] == 0.0) & (nodes[:, 0] < 2.0))
+    with pytest.raises(ValueError, match="node 12 .* no fixed node"):
+        solve_linear(matrix, load, bottom, 0.0, pairs, antiperiodic=True)
+
+
+def test_ties_that_cancel_do_not_cut_the_mesh_in_two() -> None:
+    # Two cells across with antiperiodic edges: a middle node is tied to an
+    # edge node and to its copy by equal amounts, which cancel in the
+    # equations. The mesh is still in one piece.
+    nodes, triangles = grid(2, 4)
+    matrix = assemble_stiffness(nodes, triangles, 1.0)
+    load = np.random.default_rng(34).uniform(-1.0, 1.0, len(nodes))
+    left = np.flatnonzero(nodes[:, 0] == 0.0)
+    right = np.flatnonzero(nodes[:, 0] == 1.0)
+    pairs = np.column_stack([right, left])
+    a = solve_linear(matrix, load, np.array([0]), 0.0, pairs, antiperiodic=True)
+    assert np.all(np.isfinite(a))
+    assert np.array_equal(a[right], -a[left])
+    residual = matrix @ a - load
+    middle = np.flatnonzero(nodes[:, 0] == 0.5)
+    assert np.abs(residual[middle]).max() < 1e-12
+
+
+def test_coupled_fixed_values_may_differ_by_rounding() -> None:
+    nodes, matrix, load, _ = strip()
+    last, first = column(nodes, 3), column(nodes, 0)
+    pairs = np.column_stack([last, first])
+    both = np.concatenate([first, last])
+    values = np.concatenate([np.full(len(first), 0.1 * 3), np.full(len(last), 0.3)])
+    assert values[0] != values[-1]
+    a = solve_linear(matrix, load, both, values, pairs)
+    assert np.array_equal(a[first], a[last])
+    assert a[first] == pytest.approx(0.3)
+
+
+def test_a_fixed_copy_fixes_its_original() -> None:
+    nodes, matrix, load, _ = strip()
+    last, first = column(nodes, 3), column(nodes, 0)
+    pairs = np.column_stack([last, first])
+    a = solve_linear(matrix, load, last, 2.0, pairs, antiperiodic=True)
+    assert np.array_equal(a[last], np.full(len(last), 2.0))
+    assert np.array_equal(a[first], np.full(len(first), -2.0))
+    both = np.concatenate([last, first])
+    values = np.concatenate([np.full(len(last), 2.0), np.full(len(first), -2.0)])
+    assert np.array_equal(solve_linear(matrix, load, both, values, pairs, True), a)
+
+
+def test_fixed_values_that_break_the_coupling_are_rejected() -> None:
+    nodes, matrix, load, _ = strip()
+    last, first = column(nodes, 3), column(nodes, 0)
+    pairs = np.column_stack([last, first])
+    both = np.concatenate([last, first])
+    with pytest.raises(ValueError, match="node 0 and node 3 are coupled but fixed"):
+        solve_linear(matrix, load, both, 2.0, pairs, antiperiodic=True)
+    with pytest.raises(ValueError, match="node 0 and node 3 are coupled but fixed"):
+        values = np.concatenate([np.full(len(last), 2.0), np.full(len(first), 1.0)])
+        solve_linear(matrix, load, both, values, pairs)
+    # Zero is its own opposite, so it suits both kinds.
+    solve_linear(matrix, load, both, 0.0, pairs, antiperiodic=True)
+
+
+def test_coupling_does_not_replace_a_fixed_node() -> None:
+    nodes, matrix, load, _ = strip()
+    pairs = np.column_stack([column(nodes, 3), column(nodes, 0)])
+    with pytest.raises(ValueError, match="at least one node must be fixed"):
+        solve_linear(matrix, load, np.array([], dtype=int), np.array([]), pairs, True)
+
+
+@pytest.mark.parametrize(
+    ("pairs", "message"),
+    [
+        ([[3, 0, 1]], "pairs of node numbers"),
+        ([3, 0], "pairs of node numbers"),
+        ([[3.0, 0.0]], "whole numbers"),
+        ([[12, 0]], "node 12"),
+        ([[3, -1]], "node -1"),
+        ([[3, 3]], "node 3 is coupled to itself"),
+        ([[3, 0], [3, 4]], "node 3 is the copy of two nodes"),
+        ([[3, 0], [0, 3]], "form a loop"),
+        ([[3, 7], [7, 11], [11, 3]], "form a loop"),
+    ],
+)
+def test_bad_periodic_pairs_are_rejected(pairs: list, message: str) -> None:
+    nodes, matrix, load, bottom = strip()
+    with pytest.raises(ValueError, match=f"periodic.*{message}"):
+        solve_linear(matrix, load, bottom, 0.0, np.array(pairs))
+
+
+def test_a_pair_listed_twice_is_accepted() -> None:
+    nodes, matrix, load, bottom = strip()
+    pairs = np.column_stack([column(nodes, 3), column(nodes, 0)])
+    once = solve_linear(matrix, load, bottom, 0.0, pairs)
+    twice = solve_linear(matrix, load, bottom, 0.0, np.vstack([pairs, pairs[:2]]))
+    assert np.array_equal(once, twice)
+
+
+def test_pairs_are_not_changed() -> None:
+    nodes, matrix, load, bottom = strip()
+    pairs = np.column_stack([column(nodes, 3), column(nodes, 0)])
+    before = pairs.copy()
+    solve_linear(matrix, load, bottom, 0.0, pairs, antiperiodic=True)
+    assert np.array_equal(pairs, before)
+
+
 # The reference machine
 
 
@@ -1165,3 +1525,126 @@ def test_machine_mesh_passes_the_patch_test(machine_mesh) -> None:
     matrix = assemble_stiffness(mesh.nodes, mesh.triangles, NU0)
     a = solve_linear(matrix, np.zeros(len(x)), edge, exact[edge])
     assert a == pytest.approx(exact, rel=1e-9, abs=1e-9 * np.abs(exact).max())
+
+
+# A slice of a machine against the whole machine
+
+
+def machine_model(poles: int, full: bool) -> dict:
+    """Mesh, matrix and load of the 12-slot example design, magnets and currents on.
+
+    ``poles`` replaces the design's pole count. Steel is linear here, with a
+    relative permeability of 2000, and the model ends in a field line at the
+    inner and outer radius.
+    """
+    from polecraft.core.mesh import build_mesh
+    from polecraft.design import design_from_dict, design_to_dict, load_design
+    from polecraft.machines import machine_for
+
+    root = Path(__file__).resolve().parents[2]
+    data = design_to_dict(load_design(root / "designs" / "qdd_outer_12s10p.yaml"))
+    data["poles"] = poles
+    machine = machine_for(design_from_dict(data))
+    geometry = machine.build_geometry(full=full)
+    mesh = build_mesh(geometry)
+    currents = machine.excitation(0.0, 10.0)
+    centre = centres(mesh.nodes, mesh.triangles)
+    _, area = shape_gradients(mesh.nodes, mesh.triangles)
+
+    nu = np.full(len(mesh.triangles), NU0)
+    density = np.zeros(len(mesh.triangles))
+    remanence = np.zeros((len(mesh.triangles), 2))
+    for index, region in enumerate(geometry.regions):
+        inside = mesh.triangle_region == index
+        if region.kind == "steel":
+            nu[inside] = NU0 / 2000.0
+        elif region.kind == "coil":
+            side = region.coil_side
+            density[inside] = side.sign * side.turns * currents[side.phase] / area[inside].sum()
+        elif region.kind == "magnet":
+            nu[inside] = NU0 / 1.05
+            remanence[inside] = [
+                1.2 * np.array(region.magnetisation.direction(x, y)) for x, y in centre[inside]
+            ]
+    radius = np.hypot(mesh.nodes[:, 0], mesh.nodes[:, 1])
+    fixed = np.flatnonzero(
+        np.isclose(radius, geometry.inner_radius) | np.isclose(radius, geometry.outer_radius)
+    )
+    load = current_load(mesh.nodes, mesh.triangles, density) + magnet_load(
+        mesh.nodes, mesh.triangles, remanence, nu
+    )
+    matrix = assemble_stiffness(mesh.nodes, mesh.triangles, nu)
+    return {
+        "mesh": mesh, "matrix": matrix, "load": load, "fixed": fixed,
+        "periods": machine.symmetry().periods, "slice_poles": machine.symmetry().poles,
+    }
+
+
+# 12 slots with 10 poles repeats every 6 slots and 5 poles: an odd number of
+# poles, so the next slice is this one reversed. With 8 poles it repeats
+# every 3 slots and 2 poles, unchanged.
+@pytest.fixture(scope="module", params=[10, 8], ids=["10 poles", "8 poles"])
+def slice_and_whole(request: pytest.FixtureRequest) -> dict:
+    """A slice of a 12-slot machine, the whole machine, and the whole machine's field."""
+    pytest.importorskip("gmsh", reason="meshing needs the optional Gmsh package")
+    from matplotlib.tri import LinearTriInterpolator, Triangulation
+
+    part = machine_model(request.param, full=False)
+    whole = machine_model(request.param, full=True)
+    a_whole = solve_linear(whole["matrix"], whole["load"], whole["fixed"], 0.0)
+    nodes = whole["mesh"].nodes
+    surface = Triangulation(nodes[:, 0], nodes[:, 1], whole["mesh"].triangles)
+    at = LinearTriInterpolator(surface, a_whole)
+    x, y = part["mesh"].nodes.T
+    # The whole machine's potential at the nodes of the slice. A node on the
+    # very edge of the model can fall just outside the other mesh.
+    reference = np.ma.masked_invalid(at(x, y))
+    return {
+        "part": part, "whole": whole, "a_whole": a_whole,
+        "reference": reference.filled(np.nan), "found": ~np.ma.getmaskarray(reference),
+    }
+
+
+def slice_solution(case: dict, antiperiodic: bool) -> np.ndarray:
+    part = case["part"]
+    return solve_linear(
+        part["matrix"], part["load"], part["fixed"], 0.0, part["mesh"].periodic, antiperiodic
+    )
+
+
+def test_the_mesh_chooses_antiperiodic_for_an_odd_number_of_poles(slice_and_whole: dict) -> None:
+    part, whole = slice_and_whole["part"], slice_and_whole["whole"]
+    assert part["slice_poles"] in (5, 2)
+    assert part["mesh"].antiperiodic == (part["slice_poles"] % 2 == 1)
+    assert len(part["mesh"].periodic) > 0
+    assert not whole["mesh"].antiperiodic
+    assert len(whole["mesh"].periodic) == 0
+
+
+def test_machine_slice_matches_the_whole_machine(slice_and_whole: dict) -> None:
+    # The two meshes are made separately, so they agree to the accuracy of
+    # the mesh only. Measured: 0.05 % at worst, against more than 90 % with
+    # the wrong coupling.
+    case = slice_and_whole
+    a = slice_solution(case, case["part"]["mesh"].antiperiodic)
+    found, scale = case["found"], np.abs(case["a_whole"]).max()
+    assert found.mean() > 0.98
+    assert scale > 1e-3
+    assert np.abs(a[found] - case["reference"][found]).max() < 0.01 * scale
+    assert np.sqrt(np.mean((a[found] - case["reference"][found]) ** 2)) < 0.001 * scale
+
+
+def test_machine_slice_stores_its_share_of_the_energy(slice_and_whole: dict) -> None:
+    case = slice_and_whole
+    part, whole = case["part"], case["whole"]
+    a = slice_solution(case, part["mesh"].antiperiodic)
+    energy_slice = 0.5 * a @ (part["matrix"] @ a)
+    energy_whole = 0.5 * case["a_whole"] @ (whole["matrix"] @ case["a_whole"])
+    assert part["periods"] * energy_slice == pytest.approx(energy_whole, rel=1e-3)
+
+
+def test_machine_slice_with_the_wrong_coupling_is_far_off(slice_and_whole: dict) -> None:
+    case = slice_and_whole
+    a = slice_solution(case, not case["part"]["mesh"].antiperiodic)
+    found, scale = case["found"], np.abs(case["a_whole"]).max()
+    assert np.abs(a[found] - case["reference"][found]).max() > 0.3 * scale

@@ -246,11 +246,63 @@ def _fixed_nodes(
     return unique, values[first]
 
 
+def _couplings(
+    periodic: ArrayLike | None, antiperiodic: bool, count: int
+) -> tuple[NDArray[np.intp], NDArray[np.float64]]:
+    """For every node, the node it takes its value from, and the sign.
+
+    A node that is nobody's copy takes its own value, with sign +1. A copy
+    of a copy is followed back to the first node, the signs multiplied.
+    """
+    origin = np.arange(count)
+    sign = np.ones(count)
+    if periodic is None or np.size(periodic) == 0:
+        return origin, sign
+    pairs = np.asarray(periodic)
+    if not np.issubdtype(pairs.dtype, np.integer):
+        raise ValueError("periodic pairs must hold node numbers as whole numbers")
+    if pairs.ndim != 2 or pairs.shape[1] != 2:
+        raise ValueError(
+            f"periodic must be pairs of node numbers, shape (k, 2), not {pairs.shape}"
+        )
+    outside = pairs[(pairs < 0) | (pairs >= count)]
+    if outside.size:
+        raise ValueError(
+            f"a periodic pair names node {outside[0]}, but the mesh has nodes 0 to {count - 1}"
+        )
+    same = pairs[pairs[:, 0] == pairs[:, 1], 0]
+    if same.size:
+        raise ValueError(f"periodic pairs: node {same[0]} is coupled to itself")
+    pairs = np.unique(pairs, axis=0)
+    copies, times = np.unique(pairs[:, 0], return_counts=True)
+    if np.any(times > 1):
+        raise ValueError(f"periodic pairs: node {copies[times > 1][0]} is the copy of two nodes")
+
+    direct = origin.copy()
+    direct[pairs[:, 0]] = pairs[:, 1]
+    origin = direct.copy()
+    if antiperiodic:
+        sign[pairs[:, 0]] = -1.0
+    # Each pass doubles the number of steps followed, so chains resolve fast.
+    for _ in range(64):
+        further = origin[origin]
+        if np.array_equal(further, origin):
+            break
+        sign = sign * sign[origin]
+        origin = further
+    # A chain that ends does so at a node that is nobody's copy.
+    if not np.array_equal(direct[origin], origin):
+        raise ValueError("periodic pairs form a loop, so no node gives the others their value")
+    return origin, sign
+
+
 def solve_linear(
     stiffness: sparse.spmatrix,
     load: ArrayLike,
     fixed_nodes: ArrayLike,
     fixed_values: ArrayLike,
+    periodic: ArrayLike | None = None,
+    antiperiodic: bool = False,
 ) -> NDArray[np.float64]:
     """Solve K a = f with the potential fixed at some nodes.
 
@@ -258,6 +310,13 @@ def solve_linear(
     there is no source). ``fixed_nodes`` are node numbers and
     ``fixed_values`` their potential in Wb/m: one value for all, or one per
     node. Every separate part of the mesh needs at least one fixed node.
+
+    ``periodic`` couples the two cut edges of a slice of a machine. It is a
+    list of node pairs (copy, original), shape (k, 2): the potential at the
+    copy equals that at the original, or its opposite if ``antiperiodic``
+    is true, as when the slice holds an odd number of poles. The pair then
+    shares one equation, so the slice behaves as part of the whole machine.
+    Coupling does not stand in for a fixed node: one is still needed.
 
     Returns the potential at every node, in Wb/m.
     """
@@ -271,35 +330,78 @@ def solve_linear(
     if not np.all(np.isfinite(f)):
         raise ValueError("load must be a finite number at every node")
     fixed, values = _fixed_nodes(fixed_nodes, fixed_values, count)
+    origin, sign = _couplings(periodic, antiperiodic, count)
+
+    own = origin == np.arange(count)  # nodes that keep an equation of their own
+    coupled = not np.all(own)
+    joined = abs(matrix)  # which nodes are tied to which, signs aside
+    if coupled:
+        # a = L a_own, with one entry per row of L: +1 or -1 in the column
+        # of the node's origin. The equations become L^T K L a_own = L^T f.
+        link = sparse.csr_matrix((sign, (np.arange(count), origin)), shape=(count, count))
+        matrix = (link.T @ matrix @ link).tocsr()
+        f = link.T @ f
+        fixed, values = _fixed_origins(fixed, values, origin, sign)
+        # Two entries of opposite sign can cancel in L^T K L; the nodes are
+        # tied all the same, so the ties are counted without signs.
+        joined = abs(link).T @ joined @ abs(link)
 
     potential = np.empty(count)
     potential[fixed] = values
-    is_free = np.ones(count, dtype=bool)
+    is_free = own.copy()
     is_free[fixed] = False
     free = np.flatnonzero(is_free)
-    if free.size == 0:
-        return potential
-
-    _check_supported(matrix, is_free)
-    rows = matrix[free]
-    # Move the known potentials to the right-hand side: K_ff a_f = f_f - K_fc a_c.
-    right = f[free] - rows[:, fixed] @ values
-    potential[free] = spsolve(rows[:, free].tocsc(), right)
+    if free.size:
+        _check_supported(matrix, joined, is_free, own)
+        rows = matrix[free]
+        # Move the known potentials to the right-hand side: K_ff a_f = f_f - K_fc a_c.
+        right = f[free] - rows[:, fixed] @ values
+        potential[free] = spsolve(rows[:, free].tocsc(), right)
+    if coupled:
+        potential = sign * potential[origin]
     return potential
 
 
-def _check_supported(matrix: sparse.csr_matrix, is_free: NDArray[np.bool_]) -> None:
+def _fixed_origins(
+    fixed: NDArray[np.intp],
+    values: NDArray[np.float64],
+    origin: NDArray[np.intp],
+    sign: NDArray[np.float64],
+) -> tuple[NDArray[np.intp], NDArray[np.float64]]:
+    """Fixed values moved from copies to the nodes they take their value from."""
+    at_origin = sign[fixed] * values
+    unique, first, inverse = np.unique(origin[fixed], return_index=True, return_inverse=True)
+    # Values worked out separately for a node and its copy may differ in the
+    # last digits; the first one given is used.
+    allowed = 1e-12 * np.abs(at_origin).max()
+    clash = np.flatnonzero(np.abs(at_origin - at_origin[first][inverse]) > allowed)
+    if clash.size:
+        one, other = fixed[first][inverse][clash[0]], fixed[clash[0]]
+        raise ValueError(
+            f"node {one} and node {other} are coupled but fixed to values that do not agree"
+        )
+    return unique, at_origin[first]
+
+
+def _check_supported(
+    matrix: sparse.csr_matrix,
+    joined: sparse.spmatrix,
+    is_free: NDArray[np.bool_],
+    own: NDArray[np.bool_],
+) -> None:
     """Raise ValueError if some free node is not tied to a fixed one.
 
     Such a node makes the system singular: its potential could be anything.
+    ``joined`` has an entry for every two nodes that are tied, and ``own``
+    marks the nodes that are not copies; copies have no equation.
     """
     alone = np.flatnonzero(is_free & (matrix.diagonal() == 0.0))
     if alone.size:
         raise ValueError(f"node {alone[0]} is not fixed and belongs to no triangle")
-    pieces, piece = connected_components(matrix, directed=False)
+    pieces, piece = connected_components(joined, directed=False)
     held = np.zeros(pieces, dtype=bool)
-    held[piece[~is_free]] = True
-    adrift = np.flatnonzero(~held[piece])
+    held[piece[own & ~is_free]] = True
+    adrift = np.flatnonzero(own & ~held[piece])
     if adrift.size:
         raise ValueError(
             f"node {adrift[0]} is in a part of the mesh with no fixed node, "
