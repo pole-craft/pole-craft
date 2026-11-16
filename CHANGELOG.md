@@ -11,8 +11,12 @@ releases.
 
 - Material model for the field solver (`polecraft.core.materials`):
   reluctivity against flux density, and its derivative, from a BH table for
-  steel, and constant permeability for air, copper and magnets. Nothing uses
-  it yet.
+  steel, and constant permeability for air, copper and magnets.
+- First part of the field solver (`polecraft.core.solver`): the stiffness
+  matrix for the vector potential on first-order triangles, a solve with
+  fixed-value boundaries, and the flux density in every triangle. It works
+  on plain mesh arrays and is not connected to a motor design yet: there are
+  no current or magnet sources, and steel is not yet saturated.
 
 ### Changed
 
