@@ -7,6 +7,13 @@ releases.
 
 ## [0.0.2] - unreleased
 
+### Added
+
+- Material model for the field solver (`polecraft.core.materials`):
+  reluctivity against flux density, and its derivative, from a BH table for
+  steel, and constant permeability for air, copper and magnets. Nothing uses
+  it yet.
+
 ### Changed
 
 - When Gmsh is not installed, `polecraft mesh` now says to install
