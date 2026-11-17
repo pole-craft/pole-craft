@@ -111,6 +111,8 @@ Without the `mesh` extra everything except meshing works, and the meshing tests 
 
 The project is just starting. Ideas, questions, bug reports and motor data for validation are welcome: please [open an issue](https://github.com/pole-craft/pole-craft/issues).
 
+How the package fits together, and how to add a machine type, is described in [docs/architecture.md](https://github.com/pole-craft/pole-craft/blob/main/docs/architecture.md).
+
 ## License
 
 Apache License 2.0. See [LICENSE](https://github.com/pole-craft/pole-craft/blob/main/LICENSE).

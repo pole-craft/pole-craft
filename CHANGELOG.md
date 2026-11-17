@@ -26,6 +26,8 @@ releases.
   its mesh (material, current density and magnetisation of every triangle,
   boundary nodes and slice coupling) at rotor angle 0. The same problem
   object can be put together by hand from arrays.
+- `docs/architecture.md`: how the package fits together, the contract a
+  machine type follows, the unit rule and how to add a machine type.
 
 ### Changed
 
