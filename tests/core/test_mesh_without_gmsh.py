@@ -6,7 +6,7 @@ from pathlib import Path
 
 import pytest
 
-from polecraft.core.mesh import build_mesh
+from polecraft.core.mesh import build_mesh, require_gmsh
 from polecraft.design import load_design
 from polecraft.machines import machine_for
 
@@ -49,3 +49,18 @@ def test_gmsh_that_cannot_load_its_library_is_explained(
     with pytest.raises(ImportError, match="installed but could not be loaded") as caught:
         build_mesh(geometry)
     assert "libGLU.so.1" in str(caught.value) and "README" in str(caught.value)
+
+
+def test_require_gmsh_gives_the_module_when_it_is_there() -> None:
+    gmsh = pytest.importorskip("gmsh", reason="meshing needs the optional Gmsh package")
+    assert require_gmsh() is gmsh
+
+
+def test_require_gmsh_names_the_install_command(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setitem(sys.modules, "gmsh", None)
+    with pytest.raises(ImportError) as caught:
+        require_gmsh()
+    assert str(caught.value) == (
+        "meshing needs the optional Gmsh package, which is not installed; "
+        'install it with: pip install "polecraft[mesh]"'
+    )

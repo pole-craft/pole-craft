@@ -13,6 +13,10 @@ from polecraft.machines import machine_for
 from polecraft.timing import Timings
 from polecraft.validation import DesignError
 
+# Added to the help of every command that meshes. Such a command also calls
+# require_gmsh() before anything else.
+GMSH_NOTE = 'Needs Gmsh: pip install "polecraft[mesh]"'
+
 
 def _parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
@@ -22,8 +26,9 @@ def _parser() -> argparse.ArgumentParser:
     commands = parser.add_subparsers(dest="command", required=True)
 
     mesh = commands.add_parser(
-        "mesh", help="mesh a design and save a picture of it",
-        description="Build the geometry of a design, mesh it and save a coloured picture.",
+        "mesh", help="mesh a design and save a picture of it (needs Gmsh)",
+        description="Build the geometry of a design, mesh it and save a coloured picture. "
+        + GMSH_NOTE,
     )
     mesh.add_argument("design", type=Path, help="design file (YAML)")
     mesh.add_argument(
@@ -44,8 +49,11 @@ def _parser() -> argparse.ArgumentParser:
 def _mesh(arguments: argparse.Namespace) -> int:
     timings = Timings()
     # Imported here so that other commands start without loading Matplotlib.
+    # Gmsh comes first: without it nothing below is of use, so say so at once.
     with timings.stage("load libraries"):
-        from polecraft.core.mesh import build_mesh
+        from polecraft.core.mesh import build_mesh, require_gmsh
+
+        require_gmsh()
         from polecraft.plot import picture_path, plot_mesh
 
     # Checked first, so that a mistyped file name does not cost a mesh.

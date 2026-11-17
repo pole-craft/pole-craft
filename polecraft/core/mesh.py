@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import math
 from dataclasses import dataclass
+from types import ModuleType
 
 import numpy as np
 from scipy.spatial import cKDTree
@@ -72,6 +73,33 @@ class Mesh:
             )
             angles.append(np.degrees(np.arccos(np.clip(cosine, -1.0, 1.0))))
         return np.min(angles, axis=0)
+
+
+def require_gmsh() -> ModuleType:
+    """The Gmsh module, or an ImportError that says how to get it.
+
+    Anything that is going to mesh can call this first, to stop with the
+    install command before doing any other work.
+    """
+    missing = ImportError(
+        "meshing needs the optional Gmsh package, which is not installed; "
+        'install it with: pip install "polecraft[mesh]"'
+    )
+    try:
+        import gmsh
+    except ImportError as error:
+        raise missing from error
+    except OSError as error:
+        # Gmsh loads its compiled library on import; on Linux that fails if a
+        # system library such as libGLU is absent.
+        raise ImportError(
+            f"Gmsh is installed but could not be loaded ({error}); on Linux it needs "
+            "a few system libraries, listed in the install section of the README"
+        ) from error
+    # A folder that happens to be called gmsh imports as an empty module.
+    if not hasattr(gmsh, "initialize"):
+        raise missing
+    return gmsh
 
 
 def build_mesh(geometry: Geometry, size: float = 1.0) -> Mesh:
@@ -209,20 +237,7 @@ def _mesh_regions(
     Triangle edges are ``fine`` long at the middle of the air gap and grow by
     ``growth`` metres per metre of radial distance from it, up to ``coarse``.
     """
-    try:
-        import gmsh
-    except ImportError as error:
-        raise ImportError(
-            "meshing needs the optional Gmsh package, which is not installed; "
-            'install it with: pip install "polecraft[mesh]"'
-        ) from error
-    except OSError as error:
-        # Gmsh loads its compiled library on import; on Linux that fails if a
-        # system library such as libGLU is absent.
-        raise ImportError(
-            f"Gmsh is installed but could not be loaded ({error}); on Linux it needs "
-            "a few system libraries, listed in the install section of the README"
-        ) from error
+    gmsh = require_gmsh()
     if gmsh.isInitialized():
         raise RuntimeError("Gmsh is already in use in this process; close it before meshing")
 

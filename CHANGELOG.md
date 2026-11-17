@@ -31,8 +31,14 @@ releases.
 
 ### Changed
 
-- When Gmsh is not installed, `polecraft mesh` now says to install
-  `polecraft[mesh]` (it said `pip install gmsh` before).
+- When Gmsh is not installed, a command that needs it now stops at once
+  with one line giving the install command, `pip install "polecraft[mesh]"`
+  (it said `pip install gmsh` before, and only after reading the design).
+  The example script prints the same line in place of a traceback when it
+  reaches the meshing step, and `polecraft mesh --help` says that the
+  command needs Gmsh.
+- The README states in one sentence that a plain `pip install polecraft`
+  has no mesher and that Gmsh is GPL-licensed.
 - When Gmsh is installed but cannot load, as on Linux without its system
   libraries, the message now says so and points to the README.
 

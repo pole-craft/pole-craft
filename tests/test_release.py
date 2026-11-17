@@ -47,6 +47,19 @@ def test_package_metadata(project: dict) -> None:
     assert urls["Changelog"] == f"{REPOSITORY}/blob/main/CHANGELOG.md"
 
 
+def package_names(requirements: list[str]) -> list[str]:
+    return sorted(re.split(r"[<>=!~\[ ;]", requirement)[0].lower() for requirement in requirements)
+
+
+def test_dependency_lists_are_as_intended(project: dict) -> None:
+    assert package_names(project["dependencies"]) == ["matplotlib", "numpy", "pyyaml", "scipy"]
+    extras = project["optional-dependencies"]
+    assert sorted(extras) == ["dev", "mesh"]
+    # Gmsh is GPL-licensed: it is in the mesh extra and nowhere else.
+    assert package_names(extras["mesh"]) == ["gmsh"]
+    assert package_names(extras["dev"]) == ["pytest"]
+
+
 def test_gmsh_is_only_an_optional_dependency(project: dict) -> None:
     assert not any("gmsh" in requirement.lower() for requirement in project["dependencies"])
     assert any(r.startswith("gmsh") for r in project["optional-dependencies"]["mesh"])
@@ -70,6 +83,29 @@ def test_readme_says_how_to_install_and_test(repo_root: Path) -> None:
     assert 'pip install -e ".[dev,mesh]"' in text
     assert "\npytest\n" in text
     assert "may change between 0.0.x versions" in text
+
+
+def test_readme_install_section_leads_with_the_mesh_extra(repo_root: Path) -> None:
+    text = (repo_root / "README.md").read_text(encoding="utf-8")
+    section = text.split("\n## Install\n")[1].split("\n## ")[0]
+    commands = re.findall(r"```\n(.*?)\n```", section, flags=re.DOTALL)
+    assert commands[0] == 'pip install "polecraft[mesh]"'
+    # One sentence says the plain install has no mesher and that Gmsh is GPL-licensed.
+    sentences = re.split(r"(?<=[.!?])\s+", " ".join(section.split()))
+    telling = [s for s in sentences if "GPL-licensed" in s and "no mesher" in s]
+    assert len(telling) == 1
+    assert "`pip install polecraft`" in telling[0]
+    assert "Gmsh" in telling[0]
+    # The command is the one the missing-Gmsh message gives.
+    source = (repo_root / "polecraft" / "core" / "mesh.py").read_text(encoding="utf-8")
+    assert "install it with: pip install \"polecraft[mesh]\"" in source
+
+
+def test_changelog_says_how_a_missing_gmsh_is_reported(repo_root: Path) -> None:
+    text = (repo_root / "CHANGELOG.md").read_text(encoding="utf-8")
+    entry = text.split("\n## [0.0.2]")[1].split("\n## [")[0]
+    assert 'pip install "polecraft[mesh]"' in " ".join(entry.split())
+    assert "GPL" in entry
 
 
 def test_readme_status_names_the_current_version(repo_root: Path) -> None:

@@ -5,12 +5,19 @@ import re
 import subprocess
 import sys
 import tomllib
+import types
 from pathlib import Path
 
 import pytest
 
 import polecraft
-from polecraft.cli import main
+from polecraft.cli import _parser, main
+
+INSTALL = 'pip install "polecraft[mesh]"'
+NO_GMSH = (
+    "polecraft: meshing needs the optional Gmsh package, which is not installed; "
+    f"install it with: {INSTALL}\n"
+)
 
 PNG_SIGNATURE = b"\x89PNG\r\n\x1a\n"
 
@@ -27,6 +34,21 @@ def reference(repo_root: Path) -> Path:
 @pytest.fixture
 def needs_gmsh() -> None:
     pytest.importorskip("gmsh", reason="meshing needs the optional Gmsh package")
+
+
+@pytest.fixture
+def gmsh_or_stand_in(monkeypatch: pytest.MonkeyPatch) -> None:
+    """For tests of what happens before any meshing: they run without Gmsh too.
+
+    The command checks for Gmsh first, so where it is not installed a
+    stand-in takes its place. It could not mesh, and these tests never do.
+    """
+    try:
+        import gmsh  # noqa: F401
+    except (ImportError, OSError):
+        stand_in = types.ModuleType("gmsh")
+        stand_in.initialize = lambda: None
+        monkeypatch.setitem(sys.modules, "gmsh", stand_in)
 
 
 # The mesh command
@@ -134,7 +156,12 @@ def test_picture_may_be_svg_and_carries_the_title(
     ],
 )
 def test_bad_picture_path_is_refused_before_any_work(
-    reference: Path, tmp_path: Path, capsys: pytest.CaptureFixture, name: str, reason: str
+    gmsh_or_stand_in: None,
+    reference: Path,
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture,
+    name: str,
+    reason: str,
 ) -> None:
     assert main(["mesh", str(reference), "-o", str(tmp_path / name)]) == 1
     output = capsys.readouterr()
@@ -154,7 +181,7 @@ def test_upper_case_extension_is_accepted(
 
 
 def test_design_problems_are_printed_without_a_traceback(
-    tmp_path: Path, capsys: pytest.CaptureFixture
+    gmsh_or_stand_in: None, tmp_path: Path, capsys: pytest.CaptureFixture
 ) -> None:
     design = tmp_path / "bad.yaml"
     design.write_text("type: qdd_outer\nslots: 36\npoles: 41\n", encoding="utf-8")
@@ -167,7 +194,9 @@ def test_design_problems_are_printed_without_a_traceback(
     assert not (tmp_path / "bad_mesh.png").exists()
 
 
-def test_missing_design_file_is_reported(tmp_path: Path, capsys: pytest.CaptureFixture) -> None:
+def test_missing_design_file_is_reported(
+    gmsh_or_stand_in: None, tmp_path: Path, capsys: pytest.CaptureFixture
+) -> None:
     assert main(["mesh", str(tmp_path / "nowhere.yaml")]) == 1
     assert "design file not found" in capsys.readouterr().err
 
@@ -186,15 +215,122 @@ def test_missing_gmsh_is_reported(
     assert main(["mesh", str(reference), "-o", str(tmp_path / "m.png")]) == 1
     output = capsys.readouterr()
     assert output.out == ""
-    assert output.err == (
-        "polecraft: meshing needs the optional Gmsh package, which is not installed; "
-        'install it with: pip install "polecraft[mesh]"\n'
+    assert output.err == NO_GMSH
+    assert list(tmp_path.iterdir()) == []
+
+
+def test_missing_gmsh_is_reported_before_any_work_is_done(
+    tmp_path: Path, capsys: pytest.CaptureFixture, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # Even a design file that does not exist comes second: without Gmsh the
+    # command cannot do anything, so that is what the user is told.
+    monkeypatch.setitem(sys.modules, "gmsh", None)
+    assert main(["mesh", str(tmp_path / "nowhere.yaml")]) == 1
+    output = capsys.readouterr()
+    assert output.out == ""
+    assert output.err == NO_GMSH
+
+
+def test_gmsh_that_cannot_load_is_reported_in_one_line(
+    reference: Path, tmp_path: Path, capsys: pytest.CaptureFixture, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import builtins
+
+    real_import = builtins.__import__
+
+    def broken_import(name: str, *arguments, **keywords):
+        if name == "gmsh":
+            raise OSError("libGLU.so.1: cannot open shared object file")
+        return real_import(name, *arguments, **keywords)
+
+    monkeypatch.delitem(sys.modules, "gmsh", raising=False)
+    monkeypatch.setattr(builtins, "__import__", broken_import)
+    assert main(["mesh", str(reference), "-o", str(tmp_path / "m.png")]) == 1
+    error = capsys.readouterr().err
+    assert error.count("\n") == 1
+    assert error.startswith("polecraft: Gmsh is installed but could not be loaded (libGLU.so.1")
+    assert "README" in error
+    assert list(tmp_path.iterdir()) == []
+
+
+def run_without_gmsh(*arguments: str) -> subprocess.CompletedProcess:
+    """Run the real command in a fresh interpreter in which Gmsh cannot be imported."""
+    code = (
+        "import sys; sys.modules['gmsh'] = None; "
+        "from polecraft.cli import main; sys.exit(main(sys.argv[1:]))"
     )
+    return subprocess.run(
+        [sys.executable, "-c", code, *arguments], capture_output=True, text=True
+    )
+
+
+def test_mesh_command_without_gmsh_never_shows_a_traceback(
+    reference: Path, tmp_path: Path
+) -> None:
+    done = run_without_gmsh("mesh", str(reference), "-o", str(tmp_path / "m.png"))
+    assert done.returncode == 1
+    assert done.stdout == ""
+    assert done.stderr == NO_GMSH
+    assert "Traceback" not in done.stderr
+    assert list(tmp_path.iterdir()) == []
+
+
+def test_version_and_help_work_without_gmsh() -> None:
+    version = run_without_gmsh("--version")
+    assert version.returncode == 0
+    assert version.stdout.strip() == f"polecraft {polecraft.__version__}"
+    for arguments in (["--help"], ["mesh", "--help"]):
+        shown = run_without_gmsh(*arguments)
+        assert shown.returncode == 0, shown.stderr
+        assert "usage: polecraft" in shown.stdout
+        assert shown.stderr == ""
+
+
+# Every command, with arguments to run it by, and whether it needs Gmsh.
+COMMANDS = {
+    "mesh": (["mesh", "nowhere.yaml"], True),
+}
+
+
+def test_every_command_is_listed_with_its_need_for_gmsh() -> None:
+    # A new command must be added to the table above, so that the test below
+    # holds it to the same message.
+    actions = [a for a in _parser()._actions if isinstance(a.choices, dict)]
+    assert set(actions[0].choices) == set(COMMANDS)
+
+
+@pytest.mark.parametrize("command", sorted(COMMANDS))
+def test_every_command_that_needs_gmsh_says_so_when_it_is_missing(
+    command: str, capsys: pytest.CaptureFixture, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    arguments, needs_gmsh = COMMANDS[command]
+    monkeypatch.setitem(sys.modules, "gmsh", None)
+    code = main(arguments)
+    error = capsys.readouterr().err
+    assert (error == NO_GMSH) == needs_gmsh
+    if needs_gmsh:
+        assert code == 1
+        with pytest.raises(SystemExit):
+            main([command, "--help"])
+        assert f"Needs Gmsh: {INSTALL}" in " ".join(capsys.readouterr().out.split())
+
+
+def test_a_folder_named_gmsh_is_not_taken_for_gmsh(
+    reference: Path, tmp_path: Path, capsys: pytest.CaptureFixture, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # Python imports an empty folder called gmsh as a module with nothing in it.
+    monkeypatch.setitem(sys.modules, "gmsh", types.ModuleType("gmsh"))
+    assert main(["mesh", str(reference), "-o", str(tmp_path / "m.png")]) == 1
+    assert capsys.readouterr().err == NO_GMSH
     assert list(tmp_path.iterdir()) == []
 
 
 def test_ctrl_c_stops_quietly(
-    reference: Path, tmp_path: Path, capsys: pytest.CaptureFixture, monkeypatch: pytest.MonkeyPatch
+    gmsh_or_stand_in: None,
+    reference: Path,
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     def interrupted(path: Path) -> None:
         raise KeyboardInterrupt
@@ -227,9 +363,17 @@ def test_help_describes_the_mesh_command(capsys: pytest.CaptureFixture) -> None:
     text = capsys.readouterr().out
     for option in ("--output", "--full", "--size"):
         assert option in text
+    # Line breaks in the help text fall where the terminal width puts them.
+    assert f"Needs Gmsh: {INSTALL}" in " ".join(text.split())
 
 
-def test_module_can_be_run_directly(tmp_path: Path) -> None:
+def test_top_level_help_says_which_commands_need_gmsh(capsys: pytest.CaptureFixture) -> None:
+    with pytest.raises(SystemExit):
+        main(["--help"])
+    assert "needs Gmsh" in " ".join(capsys.readouterr().out.split())
+
+
+def test_module_can_be_run_directly(needs_gmsh: None, tmp_path: Path) -> None:
     def run(*arguments: str) -> subprocess.CompletedProcess:
         return subprocess.run(
             [sys.executable, "-m", "polecraft", *arguments], capture_output=True, text=True

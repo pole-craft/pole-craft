@@ -4,6 +4,7 @@ Run from any folder: python examples/mesh_a_design.py
 Needs the optional Gmsh package (pip install "polecraft[mesh]").
 """
 
+import sys
 from pathlib import Path
 
 from polecraft import load_design, machine_for
@@ -33,7 +34,10 @@ def main() -> None:
     magnet = geometry.region("magnet_0")
     print(f"{len(geometry.regions)} regions, magnet area {magnet.area() * 1e6:.2f} mm^2")
 
-    mesh = build_mesh(geometry, size=1.0)  # smaller size, finer mesh
+    try:
+        mesh = build_mesh(geometry, size=1.0)  # smaller size, finer mesh
+    except ImportError as error:
+        sys.exit(str(error))  # Gmsh is missing: the message says how to install it
     print(f"{len(mesh.nodes)} nodes, {len(mesh.triangles)} triangles")
 
     picture = plot_mesh(mesh, geometry, "qdd_outer_36s42p_mesh.png", title=DESIGN.name)

@@ -32,7 +32,7 @@ Needs Python 3.11 or newer.
 pip install "polecraft[mesh]"
 ```
 
-The `mesh` extra installs [Gmsh](https://gmsh.info), which does the meshing. Gmsh is licensed under the GPL, so it is kept optional: Pole-Craft does not include any Gmsh code and only calls it if you install it. A plain `pip install polecraft` does not include Gmsh: designs can still be loaded and their geometry built from Python, but `polecraft mesh` stops with a one-line message saying Gmsh is missing. Install the `mesh` extra to fix it.
+A plain `pip install polecraft` has no mesher, because the mesher is [Gmsh](https://gmsh.info), which is GPL-licensed and so is kept as an optional extra that Pole-Craft calls but does not include. Without it, design files can still be loaded and checked and their geometry built from Python, and any command that needs a mesh stops with one line giving the install command above.
 
 On Linux, Gmsh needs a few system libraries that servers, containers and WSL often lack. If `polecraft mesh` reports `libGLU.so.1: cannot open shared object file` (or a similar library name), install them. On Debian or Ubuntu:
 
