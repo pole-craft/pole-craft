@@ -9,7 +9,7 @@ import numpy as np
 import pytest
 
 from polecraft.core.materials import AIR, COPPER, MU0, FrohlichSteel, LinearMaterial, Magnet
-from polecraft.core.problem import Problem, build_problem
+from polecraft.core.problem import Gap, Problem, _rotor_is_outside, build_problem
 
 SQUARE = np.array([[0.0, 0.0], [1.0, 0.0], [1.0, 1.0], [0.0, 1.0]])
 TWO_TRIANGLES = np.array([[0, 1, 2], [0, 2, 3]])
@@ -30,6 +30,49 @@ def test_smallest_problem_fills_in_the_rest() -> None:
     assert np.array_equal(problem.fixed_values, [0.0])
     assert problem.periodic.shape == (0, 2)
     assert not problem.antiperiodic
+    # Nothing to scale results by, no windings and no air gap.
+    assert problem.depth == 1.0
+    assert problem.repeats == 1
+    assert problem.windings == {}
+    assert problem.gap is None
+
+
+def test_problem_keeps_its_result_fields() -> None:
+    gap = Gap(triangles=[1], inner_radius=0.2, outer_radius=0.3, rotor_outside=True)
+    problem = Problem(
+        nodes=SQUARE, triangles=TWO_TRIANGLES, materials=(AIR,), fixed_nodes=[0],
+        depth=0.012, repeats=6, windings={"A": [100.0, -100.0], "B": 5.0}, gap=gap,
+    )
+    assert problem.depth == 0.012
+    assert problem.repeats == 6
+    assert list(problem.windings) == ["A", "B"]
+    assert np.array_equal(problem.windings["A"], [100.0, -100.0])
+    assert np.array_equal(problem.windings["B"], [5.0, 5.0])
+    assert problem.gap is gap
+    assert np.array_equal(gap.triangles, [1])
+    assert gap.rotor_outside
+
+
+def test_gap_turns_the_inner_part_unless_told_otherwise() -> None:
+    assert not Gap(triangles=[0], inner_radius=0.2, outer_radius=0.3).rotor_outside
+
+
+@pytest.mark.parametrize(
+    ("fields", "message"),
+    [
+        ({"inner_radius": 0.3, "outer_radius": 0.2}, "gap radii"),
+        ({"inner_radius": 0.0, "outer_radius": 0.2}, "gap radii"),
+        ({"inner_radius": 0.2, "outer_radius": math.nan}, "gap radii"),
+        ({"triangles": []}, "at least one triangle"),
+        ({"triangles": [0.5]}, "whole numbers"),
+        ({"triangles": [3, 4, 3]}, "listed twice"),
+    ],
+)
+def test_bad_gap_is_rejected(fields: dict, message: str) -> None:
+    values = dict(triangles=[0], inner_radius=0.2, outer_radius=0.3)
+    values.update(fields)
+    with pytest.raises(ValueError, match=message):
+        Gap(**values)
 
 
 def test_problem_keeps_what_it_is_given() -> None:
@@ -98,6 +141,18 @@ def test_one_value_can_stand_for_all_triangles() -> None:
         ({"fixed_values": [0.0, 1.0]}, "fixed values"),
         ({"fixed_nodes": [9]}, "node 9"),
         ({"periodic": [[3, 0, 1]]}, "periodic"),
+        ({"depth": 0.0}, "depth"),
+        ({"depth": -0.012}, "depth"),
+        ({"depth": math.inf}, "depth"),
+        ({"repeats": 0}, "repeats"),
+        ({"repeats": -3}, "repeats"),
+        ({"repeats": 2.5}, "repeats"),
+        ({"repeats": True}, "repeats"),
+        ({"gap": Gap([-1], 0.2, 0.3)}, "triangle -1"),
+        ({"windings": {"A": [1.0, 2.0, 3.0]}}, "winding 'A'"),
+        ({"windings": {"A": [1.0, math.nan]}}, "winding 'A'"),
+        ({"gap": Gap([5], 0.2, 0.3)}, "triangle 5"),
+        ({"gap": ([0], 0.2, 0.3)}, "gap must be a Gap"),
     ],
 )
 def test_bad_problem_is_rejected(changes: dict, message: str) -> None:
@@ -210,6 +265,75 @@ def test_the_two_sides_of_a_coil_carry_opposite_currents(reference: dict, loaded
             )
         ]
         assert totals[0] == pytest.approx(-totals[1], rel=1e-12)
+
+
+def test_problem_carries_the_stack_length_and_the_number_of_slices(
+    reference: dict, loaded: Problem
+) -> None:
+    assert loaded.depth == pytest.approx(0.012)  # 12 mm stack
+    assert loaded.depth == reference["geometry"].stack_length
+    assert loaded.repeats == 6
+    assert loaded.repeats == reference["machine"].symmetry().periods
+
+
+def test_each_phase_is_a_winding(reference: dict, loaded: Problem) -> None:
+    mesh = reference["mesh"]
+    area = mesh.triangle_areas()
+    assert list(loaded.windings) == ["A", "B", "C"]
+    for region in reference["geometry"].regions:
+        inside = in_region(reference, region.name)
+        side = region.coil_side
+        for phase, turns in loaded.windings.items():
+            if side is not None and side.phase == phase:
+                # The turns of the coil side, spread evenly, with its direction.
+                assert (turns[inside] * area[inside]).sum() == pytest.approx(side.sign * side.turns)
+                assert np.ptp(turns[inside]) == 0.0
+            else:
+                assert np.all(turns[inside] == 0.0)
+    for turns in loaded.windings.values():
+        assert np.all(turns[in_region(reference, "band")] == 0.0)
+        # As many turns going as returning: each phase has 2 coils of 20
+        # turns in the slice of 6 teeth, with two sides each.
+        assert (turns * area).sum() == pytest.approx(0.0, abs=1e-9)
+        assert (np.abs(turns) * area).sum() == pytest.approx(2 * 2 * 20)
+
+
+def test_current_density_is_the_windings_times_the_phase_currents(
+    reference: dict, loaded: Problem
+) -> None:
+    currents = reference["machine"].excitation(0.0, 8.0)
+    total = sum(loaded.windings[phase] * currents[phase] for phase in "ABC")
+    assert np.array_equal(loaded.current_density, total)
+
+
+def test_windings_do_not_depend_on_the_current(reference: dict, loaded: Problem) -> None:
+    idle = build_problem(reference["machine"], reference["mesh"], MATERIALS)
+    for phase in "ABC":
+        assert np.array_equal(idle.windings[phase], loaded.windings[phase])
+
+
+def test_the_band_is_the_ring_torque_is_taken_in(reference: dict, loaded: Problem) -> None:
+    mesh, geometry = reference["mesh"], reference["geometry"]
+    gap = loaded.gap
+    assert np.array_equal(gap.triangles, np.flatnonzero(in_region(reference, "band")))
+    assert gap.inner_radius == geometry.band_inner_radius
+    assert gap.outer_radius == geometry.band_outer_radius
+    radius = np.linalg.norm(mesh.nodes[mesh.triangles[gap.triangles]], axis=2)
+    assert radius.min() == pytest.approx(gap.inner_radius)
+    assert radius.max() == pytest.approx(gap.outer_radius)
+    # The magnets of this design are outside the stator.
+    assert gap.rotor_outside
+
+
+def test_a_rotor_inside_the_band_is_recognised(reference: dict) -> None:
+    import dataclasses
+
+    geometry = reference["geometry"]
+    assert _rotor_is_outside(geometry)
+    # The same regions with the two parts changing places: the turning part
+    # is then the one inside the band.
+    swapped = dataclasses.replace(geometry, stator=geometry.rotor, rotor=geometry.stator)
+    assert not _rotor_is_outside(swapped)
 
 
 def test_no_current_means_no_current_density(reference: dict) -> None:

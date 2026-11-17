@@ -26,6 +26,9 @@ releases.
   its mesh (material, current density and magnetisation of every triangle,
   boundary nodes and slice coupling) at rotor angle 0. The same problem
   object can be put together by hand from arrays.
+- Results from a solved field (`polecraft.core.post`): torque on the rotor
+  from the Maxwell stress in the air gap, and the flux linked by each
+  phase, both for the whole machine at rotor angle 0.
 - `docs/architecture.md`: how the package fits together, the contract a
   machine type follows, the unit rule and how to add a machine type.
 

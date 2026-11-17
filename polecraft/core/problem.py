@@ -1,11 +1,14 @@
 """The field problem the solver is given, and how one is built for a machine.
 
-A ``Problem`` is everything the solver needs and nothing else: a mesh, a
-material for every triangle, the current density and magnetisation of every
-triangle, the nodes held at a fixed potential and the node pairs that couple
-the cut edges of a slice. It can be put together by hand from arrays, which
-is how the solver is tested, or by ``build_problem`` from a machine and its
-mesh.
+A ``Problem`` holds what the solver needs: a mesh, a material for every
+triangle, the current density and magnetisation of every triangle, the nodes
+held at a fixed potential and the node pairs that couple the cut edges of a
+slice. It also holds what is needed to turn the solved field into results:
+the depth of the model, how often it repeats, where the windings are and
+where the air gap is. The solver does not look at those.
+
+A problem can be put together by hand from arrays, which is how the solver
+is tested, or by ``build_problem`` from a machine and its mesh.
 
 Lengths are in metres. Current density is in A/m2, positive out of the plane,
 and magnetisation is the remanence vector in tesla.
@@ -13,7 +16,8 @@ and magnetisation is the remanence vector in tesla.
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+import math
+from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Mapping, Sequence
 
 import numpy as np
@@ -31,6 +35,38 @@ USUAL = {"air": AIR, "copper": COPPER}
 
 
 @dataclass(frozen=True, eq=False)
+class Gap:
+    """A ring of air between the fixed and the turning part, to take torque in.
+
+    The triangles fill the ring between the two radii, all the way round the
+    model.
+    """
+
+    triangles: NDArray[np.intp]  # numbers of the triangles in the ring
+    inner_radius: float  # metres
+    outer_radius: float
+    rotor_outside: bool = False  # the turning part is the one outside the ring
+
+    def __post_init__(self) -> None:
+        triangles = _whole_numbers(self.triangles, "gap triangles").ravel()
+        if not (
+            math.isfinite(self.inner_radius)
+            and math.isfinite(self.outer_radius)
+            and 0.0 < self.inner_radius < self.outer_radius
+        ):
+            raise ValueError(
+                "gap radii must be positive, the inner one smaller: "
+                f"got {self.inner_radius} and {self.outer_radius}"
+            )
+        if triangles.size == 0:
+            raise ValueError("a gap needs at least one triangle")
+        if np.unique(triangles).size != triangles.size:
+            raise ValueError("a gap triangle is listed twice, which would count its torque twice")
+        object.__setattr__(self, "triangles", triangles)
+        object.__setattr__(self, "rotor_outside", bool(self.rotor_outside))
+
+
+@dataclass(frozen=True, eq=False)
 class Problem:
     """One magnetic field problem on a triangle mesh.
 
@@ -40,6 +76,13 @@ class Problem:
     held at zero. A single current density, remanence vector or fixed value
     stands for all triangles or fixed nodes. A magnetised triangle needs a
     linear material; the solver refuses it otherwise.
+
+    The last four fields are for results. ``depth`` is the length along the
+    axis that the model stands for, and ``repeats`` how many times the
+    meshed part occurs in the whole machine. ``windings`` gives, for each
+    winding by name, the turns per square metre in every triangle, with the
+    sign of the direction a positive current flows in; ``gap`` is the ring
+    torque is taken in.
     """
 
     nodes: NDArray[np.float64]  # (n, 2) positions in metres
@@ -52,6 +95,10 @@ class Problem:
     fixed_values: NDArray[np.float64] = 0.0  # (k,) their potential in Wb/m
     periodic: NDArray[np.intp] = None  # (p, 2) node pairs: copy, original
     antiperiodic: bool = False  # a copy takes the opposite of its original
+    depth: float = 1.0  # metres along the axis
+    repeats: int = 1  # times the meshed part occurs in the whole machine
+    windings: Mapping[str, NDArray[np.float64]] = field(default_factory=dict)  # turns/m2, (m,) each
+    gap: Gap | None = None
 
     def __post_init__(self) -> None:
         nodes = np.array(self.nodes, dtype=float)
@@ -107,7 +154,29 @@ class Problem:
                 )
             _check_nodes(pairs, len(nodes), "periodic")
 
+        if not (math.isfinite(self.depth) and self.depth > 0.0):
+            raise ValueError(f"depth must be a positive length in metres, not {self.depth}")
+        if isinstance(self.repeats, bool) or not isinstance(self.repeats, (int, np.integer)):
+            raise ValueError(f"repeats must be a whole number, not {self.repeats!r}")
+        if self.repeats < 1:
+            raise ValueError(f"repeats must be at least 1, not {self.repeats}")
+        windings = {
+            str(name): _per_triangle(turns, (count,), f"winding '{name}'")
+            for name, turns in dict(self.windings).items()
+        }
+        if self.gap is not None:
+            if not isinstance(self.gap, Gap):
+                raise ValueError("gap must be a Gap")
+            wrong = self.gap.triangles[(self.gap.triangles < 0) | (self.gap.triangles >= count)]
+            if wrong.size:
+                raise ValueError(
+                    f"the gap names triangle {wrong[0]}, but there are triangles 0 to {count - 1}"
+                )
+
         for name, value in (
+            ("depth", float(self.depth)),
+            ("repeats", int(self.repeats)),
+            ("windings", windings),
             ("nodes", nodes),
             ("triangles", triangles),
             ("materials", materials),
@@ -171,6 +240,11 @@ def build_problem(
     lines (potential 0): no flux leaves the iron there. The cut edges of a
     slice are coupled as the mesh says.
 
+    For results, the problem also carries the stack length, the number of
+    slices in the machine, one winding per phase (all coils of a phase in
+    series), and the band of air between stator and rotor as the ring to
+    take torque in.
+
     Only what the machine contract offers is used: the regions from
     ``build_geometry`` and the phase currents from ``excitation``.
     """
@@ -180,6 +254,7 @@ def build_problem(
     triangle_material = np.zeros(len(mesh.triangles), dtype=np.intp)
     density = np.zeros(len(mesh.triangles))
     remanence = np.zeros((len(mesh.triangles), 2))
+    windings: dict[str, NDArray[np.float64]] = {}
 
     def index_of(name: str) -> int:
         if name not in known:
@@ -200,8 +275,9 @@ def build_problem(
         triangle_material[inside] = index_of(region.material)
         if region.coil_side is not None:
             side = region.coil_side
-            ampere_turns = side.sign * side.turns * phase_currents[side.phase]
-            density[inside] = ampere_turns / area[inside].sum()
+            turns = windings.setdefault(side.phase, np.zeros(len(mesh.triangles)))
+            turns[inside] = side.sign * side.turns / area[inside].sum()
+            density[inside] = turns[inside] * phase_currents[side.phase]
         if region.magnetisation is not None:
             grade = known[region.material]
             if not isinstance(grade, Magnet):
@@ -226,6 +302,15 @@ def build_problem(
         fixed_values=0.0,
         periodic=mesh.periodic,
         antiperiodic=mesh.antiperiodic,
+        depth=geometry.stack_length,
+        repeats=round(2.0 * math.pi / geometry.span_angle),
+        windings={phase: windings[phase] for phase in sorted(windings)},
+        gap=Gap(
+            triangles=np.flatnonzero(mesh.triangle_region == len(geometry.regions)),
+            inner_radius=geometry.band_inner_radius,
+            outer_radius=geometry.band_outer_radius,
+            rotor_outside=_rotor_is_outside(geometry),
+        ),
     )
 
 
@@ -259,6 +344,12 @@ def _geometry_of(machine: Machine, mesh: Mesh) -> Geometry:
         ):
             return geometry
     raise ValueError("the mesh does not belong to this machine: its regions are not the machine's")
+
+
+def _rotor_is_outside(geometry: Geometry) -> bool:
+    """Whether the rotor regions lie outside the band, not inside it."""
+    x, y = geometry.rotor[0].boundary[0].start
+    return math.hypot(x, y) > 0.5 * (geometry.band_inner_radius + geometry.band_outer_radius)
 
 
 def _directions(magnetisation: object, points: NDArray[np.float64]) -> NDArray[np.float64]:

@@ -6,10 +6,11 @@ be ahead of the latest release; it will grow with the package.
 
 What works today: a design file is loaded and checked, turned into geometry,
 meshed, and the magnetic field is solved at one rotor position, with steel
-that saturates. What is not built yet: torque and flux linkage from the
-field, rotation of the rotor, the studies (cogging, back-EMF, efficiency),
-a full material library, and any machine other than the outer-rotor one.
-Nothing on the command line runs the solver yet; it is reached from Python.
+that saturates. Torque and the flux linked by each phase are read off the
+solved field. What is not built yet: rotation of the rotor, the studies
+(cogging, back-EMF, efficiency), losses, a full material library, and any
+machine other than the outer-rotor one. Nothing on the command line runs
+the solver yet; it is reached from Python.
 
 ## From design file to results
 
@@ -33,6 +34,9 @@ Problem
    |  polecraft/core/solver.py   field solve
    v
 Solution                         potential and flux density
+   |  polecraft/core/post.py     torque, flux linkage
+   v
+results
 ```
 
 1. `polecraft/design.py` reads a YAML file such as
@@ -58,6 +62,9 @@ Solution                         potential and flux density
 5. `solve` in `polecraft/core/solver.py` solves for the vector potential by
    Newton iteration and returns the potential, the flux density in every
    triangle and a record of the iteration.
+6. `torque` and `flux_linkage` in `polecraft/core/post.py` take the problem
+   and its solution and give the torque on the rotor and the flux linked by
+   each phase, for the whole machine.
 
 The `polecraft mesh` command (`polecraft/cli.py`) runs steps 1 to 3 and
 saves a picture with `polecraft/plot.py`. `polecraft/timing.py` times the
@@ -81,9 +88,13 @@ works with regions, materials, coils and magnets only.
   a formula, not data for a real steel.
 - `polecraft/core/problem.py`: the `Problem` the solver is given. It can be
   built for a machine, or by hand from arrays, which is how the solver is
-  tested.
+  tested. It also says where the windings and the air gap are, for the
+  results.
 - `polecraft/core/solver.py`: the field solve. It takes a `Problem` and
   nothing else.
+- `polecraft/core/post.py`: results from a solved field. Torque comes from
+  the Maxwell stress in the band of air between stator and rotor, and flux
+  linkage from the potential over the coil sides.
 
 **`polecraft/machines/`** holds one module per machine type, and the
 contract they follow in `polecraft/machines/base.py`. The only machine so
@@ -135,8 +146,9 @@ radians, tesla, amperes. The few values kept in degrees for reporting say
 so in their name, as in `angle_deg`. The change of units happens in one
 place for each machine, where it builds its geometry.
 
-Fields are per metre of depth in the solver. The stack length is carried in
-the geometry for the quantities that need it later.
+Fields are per metre of depth in the solver. The stack length goes into the
+problem as its depth, and the results (flux linkage, torque) are scaled by
+it and by the number of slices in the machine.
 
 ## Adding a machine
 
