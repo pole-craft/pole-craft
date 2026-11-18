@@ -24,7 +24,8 @@ def main() -> None:
     print(f"{design.slots} slots, {design.poles} poles")
     print(f"repeats {slice_.periods} times, every {slice_.angle_deg:g} degrees")
 
-    # One letter per coil side around the stator; lower case is the return side.
+    # One letter per tooth round the stator: the phase of its coil; lower
+    # case is a coil wound the opposite way.
     coils = concentrated_winding(design.slots, design.poles)
     print(f"winding layout: {layout_string(coils)}")
     print(f"winding factor: {winding_factor(design.slots, design.poles):.4f}")
