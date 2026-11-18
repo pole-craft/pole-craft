@@ -11,7 +11,8 @@ class Timings:
     """Collects the time spent in named stages and prints them as a table.
 
     Stages follow one another. Do not put one inside another: both would be
-    listed and the total would count the inner one twice.
+    listed and the total would count the inner one twice. A stage that is
+    timed again under the same name adds to the time it already has.
     """
 
     def __init__(self) -> None:
@@ -24,7 +25,15 @@ class Timings:
         try:
             yield
         finally:
-            self.stages.append((name, time.perf_counter() - start))
+            self.add(name, time.perf_counter() - start)
+
+    def add(self, name: str, seconds: float) -> None:
+        """Add time to a stage, which is listed where it was first named."""
+        for index, (known, so_far) in enumerate(self.stages):
+            if known == name:
+                self.stages[index] = (name, so_far + seconds)
+                return
+        self.stages.append((name, seconds))
 
     @property
     def total(self) -> float:

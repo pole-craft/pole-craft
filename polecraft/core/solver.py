@@ -24,14 +24,18 @@ describes.
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+import time
+from dataclasses import dataclass, field
 from typing import TYPE_CHECKING
 
 import numpy as np
 from numpy.typing import ArrayLike, NDArray
 from scipy import sparse
 from scipy.sparse.csgraph import connected_components
-from scipy.sparse.linalg import spsolve
+
+from polecraft.core import compute
+from polecraft.core.compute import DEFAULT_SOLVER, Assembler, solve_sparse, solver_name
+from polecraft.timing import Timings
 
 if TYPE_CHECKING:
     from polecraft.core.problem import Problem
@@ -323,8 +327,10 @@ class _Reduction:
         fixed_values: ArrayLike,
         periodic: ArrayLike | None,
         antiperiodic: bool,
+        solver: str | None = None,
     ) -> None:
         self.count = count
+        self.solver = solver_name(solver)
         fixed, values = _fixed_nodes(fixed_nodes, fixed_values, count)
         self.origin, self.sign = _couplings(periodic, antiperiodic, count)
         self.own = self.origin == np.arange(count)  # nodes with an equation of their own
@@ -342,6 +348,7 @@ class _Reduction:
         self.is_free[fixed] = False
         self.free = np.flatnonzero(self.is_free)
         self._checked = False
+        self.solver_seconds = 0.0  # time spent inside the sparse solver so far
 
     def conform(self, potential: NDArray[np.float64]) -> NDArray[np.float64]:
         """A potential with the fixed values and couplings put in."""
@@ -381,7 +388,9 @@ class _Reduction:
             rows = matrix[self.free]
             # Move the known potentials to the right-hand side: K_ff a_f = f_f - K_fc a_c.
             right = f[self.free] - rows[:, self.fixed] @ self.values
-            potential[self.free] = spsolve(rows[:, self.free].tocsc(), right)
+            started = time.perf_counter()
+            potential[self.free] = solve_sparse(rows[:, self.free], right, self.solver)
+            self.solver_seconds += time.perf_counter() - started
         if self.coupled:
             potential = self.sign * potential[self.origin]
         return potential
@@ -394,6 +403,7 @@ def solve_linear(
     fixed_values: ArrayLike,
     periodic: ArrayLike | None = None,
     antiperiodic: bool = False,
+    solver: str | None = None,
 ) -> NDArray[np.float64]:
     """Solve K a = f with the potential fixed at some nodes.
 
@@ -409,8 +419,14 @@ def solve_linear(
     shares one equation, so the slice behaves as part of the whole machine.
     Coupling does not stand in for a fixed node: one is still needed.
 
+    ``solver`` names the sparse solver, one of
+    ``polecraft.core.compute.known_solvers()``; None means the default,
+    SuperLU. One that is not installed is replaced by the default, with
+    a warning.
+
     Returns the potential at every node, in Wb/m.
     """
+    solver = solver_name(solver)
     matrix = sparse.csr_matrix(stiffness)
     count = matrix.shape[0]
     if matrix.shape != (count, count):
@@ -420,7 +436,7 @@ def solve_linear(
         raise ValueError(f"load must have one value per node ({count}), not {f.shape}")
     if not np.all(np.isfinite(f)):
         raise ValueError("load must be a finite number at every node")
-    reduction = _Reduction(count, fixed_nodes, fixed_values, periodic, antiperiodic)
+    reduction = _Reduction(count, fixed_nodes, fixed_values, periodic, antiperiodic, solver)
     return reduction.solve(matrix, f)
 
 
@@ -497,6 +513,8 @@ class Solution:
     # to the size of the currents being balanced in the final field.
     residuals: tuple[float, ...]
     steps: tuple[float, ...]  # relaxation factor of each iteration; 1 is a full Newton step
+    timings: Timings = field(default_factory=Timings)  # where the time of the solve went
+    solver: str = DEFAULT_SOLVER  # the sparse solver that was used
 
     @property
     def iterations(self) -> int:
@@ -512,6 +530,19 @@ class Solution:
                 f"  converged in {self.iterations} iterations",
             ]
         )
+
+    def timing_report(self) -> str:
+        """Time spent in each part of the solve, with the solver's name, as text.
+
+        "linear solve" is the time inside the sparse solver alone. If a
+        faster solver could be installed, the last line says how; it is
+        then used when named.
+        """
+        lines = [f"Timing (solver: {self.solver})"] + self.timings.report().splitlines()[1:]
+        hint = compute.faster_solver_hint()
+        if hint:
+            lines.append(f"  a faster solver can be installed and then named: {hint}")
+        return "\n".join(lines)
 
 
 def _iteration_table(residuals: tuple[float, ...], steps: tuple[float, ...]) -> str:
@@ -532,6 +563,7 @@ def solve(
     start: ArrayLike | None = None,
     tolerance: float = 1e-10,
     max_iterations: int = 30,
+    solver: str | None = None,
 ) -> Solution:
     """Solve a field problem, with steel that saturates, by Newton iteration.
 
@@ -554,10 +586,27 @@ def solve(
     A magnetised triangle must have a linear material, as a magnet on its
     recoil line has.
 
+    ``solver`` names the sparse solver for the linear systems, one of
+    ``polecraft.core.compute.known_solvers()``; None means the default,
+    SuperLU. One that is not installed is replaced by the default, with
+    a warning, and the solve goes on. The solution records the solver that
+    was used, and how the time was spent.
+
     Raises ConvergenceError if ``max_iterations`` is not enough, or if no
     step lowers the residual, which also happens when ``tolerance`` is
     below what rounding allows (about 1e-13).
     """
+    began = time.perf_counter()
+    solver = solver_name(solver)
+    compute.prepare(solver)
+    spent = {
+        # Loading the sparse solver's library, the first time it is used.
+        "solver start-up": time.perf_counter() - began,
+        "assemble": 0.0,
+        "boundary conditions": 0.0,
+        "linear solve": 0.0,
+        "materials and residual": 0.0,
+    }
     if not (np.isfinite(tolerance) and tolerance > 0.0):
         raise ValueError(f"tolerance must be a positive number, not {tolerance}")
     if max_iterations < 1:
@@ -587,11 +636,18 @@ def solve(
         - problem.remanence[:, None, 1] * gradients[:, :, 0]
     )
     reduction = _Reduction(
-        count, problem.fixed_nodes, problem.fixed_values, problem.periodic, problem.antiperiodic
+        count,
+        problem.fixed_nodes,
+        problem.fixed_values,
+        problem.periodic,
+        problem.antiperiodic,
+        solver,
     )
+    assembler = Assembler(triangles, count)
 
     def state(a: NDArray[np.float64]) -> dict:
         """Field, material values and residual for a potential."""
+        started = time.perf_counter()
         slope = np.einsum("ei,eid->ed", a[triangles], gradients)  # grad A
         b = np.hypot(slope[:, 0], slope[:, 1])
         nu = np.empty(len(triangles))
@@ -607,6 +663,7 @@ def solve(
         size = np.linalg.norm(
             reduction.free_sum(_to_nodes(np.abs(wanted), triangles, count) + np.abs(load))
         )
+        spent["materials and residual"] += time.perf_counter() - started
         return {
             "slope": slope, "b": b, "nu": nu, "change": change, "pull": pull, "load": load,
             "unbalance": float(np.linalg.norm(out_of_balance)), "size": float(size),
@@ -633,16 +690,24 @@ def solve(
         # Tangent matrix: nu K, plus the change of nu with B. With
         # q = area (dnu/dB) / B and v = grad N . grad A, the extra term of a
         # triangle is q v v^T; it vanishes with B.
+        started = time.perf_counter()
         b, pull = now["b"], now["pull"]
         q = np.divide(area * now["change"], b, out=np.zeros_like(b), where=b > 0.0)
         local = (now["nu"] * area)[:, None, None] * np.einsum(
             "eid,ejd->eij", gradients, gradients
         ) + q[:, None, None] * pull[:, :, None] * pull[:, None, :]
-        tangent = _assemble(local, triangles, count)
+        tangent = assembler.assemble(local)
         # Newton step written for the new potential: T a_new = f + (T - nu K) a,
         # and (T - nu K) a = q B^2 v at each corner.
         right = now["load"] + _to_nodes((q * b * b)[:, None] * pull, triangles, count)
+        assembled = time.perf_counter()
+        in_solver = reduction.solver_seconds
         target = reduction.solve(tangent, right)
+        in_solver = reduction.solver_seconds - in_solver
+        spent["assemble"] += assembled - started
+        spent["linear solve"] += in_solver
+        # Putting in the fixed values and the couplings, and taking them out.
+        spent["boundary conditions"] += time.perf_counter() - assembled - in_solver
 
         step = 1.0
         while True:
@@ -662,10 +727,16 @@ def solve(
         steps.append(step)
 
     slope = now["slope"]
-    return Solution(
+    solution = Solution(
         potential=potential,
         flux_density=np.column_stack([slope[:, 1], -slope[:, 0]]),
         reluctivity=now["nu"],
         residuals=relative(),
         steps=tuple(steps),
+        solver=solver,
     )
+    for name, seconds in spent.items():
+        solution.timings.add(name, seconds)
+    # Whatever is left: setting up, the checks, putting the result together.
+    solution.timings.add("other", time.perf_counter() - began - sum(spent.values()))
+    return solution

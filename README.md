@@ -34,6 +34,14 @@ pip install "polecraft[mesh]"
 
 A plain `pip install polecraft` has no mesher, because the mesher is [Gmsh](https://gmsh.info), which is GPL-licensed and so is kept as an optional extra that Pole-Craft calls but does not include. Without it, design files can still be loaded and checked and their geometry built from Python, and any command that needs a mesh stops with one line giving the install command above.
 
+From version 0.0.2, which has the field solver and is not released yet, a faster solver is optional. To install it as well:
+
+```
+pip install "polecraft[mesh,pardiso]"
+```
+
+This adds [pypardiso](https://github.com/haasad/PyPardiso) and with it PARDISO from Intel's MKL, which makes a field solve quicker than the solver that is always there (SciPy's SuperLU): by about a tenth on a small model such as the slice of an example motor, and by a quarter or more on larger ones. MKL is free to use but not open source, which is why it is not installed by default. It exists for Intel and AMD processors on Windows and Linux only: on a Mac, or on an ARM processor, the command above installs everything else and leaves the faster solver out. Installing it does not switch it on: SuperLU stays the default, and PARDISO is used when you ask for it by name, `solve(problem, solver="pardiso")`. The first solve of a run takes about a third of a second longer while MKL loads, so the gain shows over many solves or on large models. Without it nothing is lost but speed: the timing report of a solve gives the command above. If you ask for `pardiso` by name where it is not installed, a warning says so and the work goes on with SuperLU. To add it to an existing install: `pip install "polecraft[pardiso]"`.
+
 On Linux, Gmsh needs a few system libraries that servers, containers and WSL often lack. If `polecraft mesh` reports `libGLU.so.1: cannot open shared object file` (or a similar library name), install them. On Debian or Ubuntu:
 
 ```
@@ -73,6 +81,25 @@ plot_mesh(mesh, geometry, "motor.png")
 ```
 
 A longer example that also prints the winding layout is in [examples/mesh_a_design.py](https://github.com/pole-craft/pole-craft/blob/main/examples/mesh_a_design.py). The Python interface may change between 0.0.x versions.
+
+## Examples
+
+Scripts in the [examples folder](https://github.com/pole-craft/pole-craft/tree/main/examples) of the repository, each run with `python examples/<name>`. The first two run with the released 0.0.1. The rest use the field solver, which is in the repository and comes with version 0.0.2.
+
+| Example | What it shows | Needs Gmsh |
+|---|---|---|
+| [mesh_a_design.py](https://github.com/pole-craft/pole-craft/blob/main/examples/mesh_a_design.py) | Load a design, print its winding, mesh it, save a picture | yes |
+| [winding_layouts.py](https://github.com/pole-craft/pole-craft/blob/main/examples/winding_layouts.py) | Layout, repeating slice and winding factor for several slot and pole counts | no |
+| [material_models.py](https://github.com/pole-craft/pole-craft/blob/main/examples/material_models.py) | Air, a magnet and saturating steel as the solver sees them; the placeholder steel beside its formula | no |
+| [solve_a_motor.py](https://github.com/pole-craft/pole-craft/blob/main/examples/solve_a_motor.py) | Solve the field of a motor; torque, flux linkage, convergence and timing reports | yes |
+| [torque_against_current.py](https://github.com/pole-craft/pole-craft/blob/main/examples/torque_against_current.py) | Torque at several currents, showing the steel saturate | yes |
+| [slice_against_whole_machine.py](https://github.com/pole-craft/pole-craft/blob/main/examples/slice_against_whole_machine.py) | The repeating slice gives the whole machine's torque and flux linkage for a fraction of the work | yes |
+| [picture_of_the_field.py](https://github.com/pole-craft/pole-craft/blob/main/examples/picture_of_the_field.py) | Save a picture of flux density and field lines | yes |
+| [choose_a_solver.py](https://github.com/pole-craft/pole-craft/blob/main/examples/choose_a_solver.py) | List the sparse solvers on your machine and time each | yes |
+| [core_with_an_air_gap.py](https://github.com/pole-craft/pole-craft/blob/main/examples/core_with_an_air_gap.py) | A hand-built saturating core, checked against the magnetic circuit formula | no |
+| [inductance_of_a_coil.py](https://github.com/pole-craft/pole-craft/blob/main/examples/inductance_of_a_coil.py) | Inductance of a hand-built coil from its flux linkage, checked against a formula | no |
+
+The motor examples use a placeholder steel curve and a stand-in magnet, not the grades the design names, so their numbers show how the tool behaves, not how the motor performs.
 
 ## Roadmap
 

@@ -92,6 +92,13 @@ works with regions, materials, coils and magnets only.
   results.
 - `polecraft/core/solver.py`: the field solve. It takes a `Problem` and
   nothing else.
+- `polecraft/core/compute.py`: the heavy arithmetic. The solver hands its
+  sparse linear systems to it by the name of a solver, so that a faster one
+  can be added in one place, and it builds the matrix without working out
+  again which entries it has. The solution says how its time was spent.
+  The solver that comes with SciPy is the default. One solver, PARDISO, is
+  in an optional package and is used only when asked for by name; where
+  the package is missing the default is used instead.
 - `polecraft/core/post.py`: results from a solved field. Torque comes from
   the Maxwell stress in the band of air between stator and rotor, and flux
   linkage from the potential over the coil sides.

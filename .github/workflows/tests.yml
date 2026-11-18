@@ -40,6 +40,33 @@ jobs:
       - name: Run the tests
         run: python -m pytest
 
+  # PARDISO exists for Windows and Linux only, so never for a Mac here.
+  with-pardiso:
+    name: With the optional PARDISO solver, ${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.11"
+          cache: pip
+      - name: Install Gmsh system libraries
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libglu1-mesa libxcursor1 libxft2 libxinerama1 libxrender1 libgomp1
+      - name: Install
+        run: python -m pip install -e ".[dev,mesh,pardiso]"
+      # Fails here, not as a silent fall back to SuperLU, if PARDISO cannot be loaded.
+      - name: Check that PARDISO can be chosen
+        run: python -c "from polecraft.core.compute import available_solvers; assert 'pardiso' in available_solvers()"
+      - name: Run the tests
+        run: python -m pytest
+
   without-gmsh:
     name: Without Gmsh
     runs-on: ubuntu-latest

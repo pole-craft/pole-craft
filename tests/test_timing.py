@@ -45,3 +45,16 @@ def test_report_lists_every_stage_and_the_total() -> None:
 
 def test_report_with_no_stages() -> None:
     assert Timings().report() == "Timing\n  total     0.000 s"
+
+
+def test_a_stage_timed_again_adds_to_its_time() -> None:
+    timings = Timings()
+    timings.add("assemble", 0.25)
+    timings.add("solve", 1.0)
+    timings.add("assemble", 0.5)
+    assert timings.stages == [("assemble", 0.75), ("solve", 1.0)]
+    with timings.stage("solve"):
+        time.sleep(0.01)
+    assert [name for name, _ in timings.stages] == ["assemble", "solve"]
+    assert timings.stages[1][1] >= 1.01
+    assert timings.total == pytest.approx(0.75 + timings.stages[1][1])

@@ -34,6 +34,13 @@ dependencies = [
 # Gmsh is GPL-licensed, so it is an optional extra and is only ever imported
 # from polecraft/core/mesh.py.
 mesh = ["gmsh>=4.11"]
+# PARDISO, a faster sparse solver. It comes with Intel's MKL, which is free to
+# use but not open source, so it is optional too. MKL exists for Intel and AMD
+# processors on Windows and Linux only; anywhere else this extra installs
+# nothing, and SciPy's solver is used.
+pardiso = [
+    "pypardiso>=0.4; sys_platform != 'darwin' and (platform_machine == 'x86_64' or platform_machine == 'AMD64')",
+]
 dev = ["pytest>=8.0"]
 
 [project.urls]

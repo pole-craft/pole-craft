@@ -26,9 +26,26 @@ releases.
   its mesh (material, current density and magnetisation of every triangle,
   boundary nodes and slice coupling) at rotor angle 0. The same problem
   object can be put together by hand from arrays.
+- Compute layer (`polecraft.core.compute`): the field solve takes the name
+  of a sparse solver, and every solution carries a timing report of where
+  its time went. `superlu`, `superlu_symmetric` and `banded` come with
+  SciPy. `pardiso` is optional and faster
+  (`pip install "polecraft[pardiso]"`; it brings Intel's MKL, which is not
+  open source and exists for Windows and Linux on Intel and AMD processors
+  only). SuperLU is the default; PARDISO is used when asked for by name
+  (`solve(problem, solver="pardiso")`). Its first solve in a run takes
+  about a third of a second longer while MKL loads, which the timing report
+  lists on its own line. Where it is not installed, the timing report says
+  how to install it, and asking for it by name gives a warning and the
+  solve carries on with SuperLU.
 - Results from a solved field (`polecraft.core.post`): torque on the rotor
   from the Maxwell stress in the air gap, and the flux linked by each
   phase, both for the whole machine at rotor angle 0.
+- Nine more example scripts in `examples/`: winding layouts, material
+  models, solving a motor, torque against current, the slice against the
+  whole machine, a picture of the field, choosing a solver, and two
+  hand-built problems checked against formulas (a saturating core with an
+  air gap, and the inductance of a coil).
 - `docs/architecture.md`: how the package fits together, the contract a
   machine type follows, the unit rule and how to add a machine type.
 

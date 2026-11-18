@@ -54,10 +54,76 @@ def package_names(requirements: list[str]) -> list[str]:
 def test_dependency_lists_are_as_intended(project: dict) -> None:
     assert package_names(project["dependencies"]) == ["matplotlib", "numpy", "pyyaml", "scipy"]
     extras = project["optional-dependencies"]
-    assert sorted(extras) == ["dev", "mesh"]
+    assert sorted(extras) == ["dev", "mesh", "pardiso"]
     # Gmsh is GPL-licensed: it is in the mesh extra and nowhere else.
     assert package_names(extras["mesh"]) == ["gmsh"]
     assert package_names(extras["dev"]) == ["pytest"]
+    # PARDISO comes with Intel's MKL, which is not open source: its own extra.
+    assert package_names(extras["pardiso"]) == ["pypardiso"]
+    # MKL does not exist for Macs or ARM processors. There the extra must
+    # install nothing, or the whole install command would fail.
+    (requirement,) = extras["pardiso"]
+    marker = requirement.split(";")[1]
+    assert "sys_platform != 'darwin'" in marker
+    assert "platform_machine == 'x86_64'" in marker and "platform_machine == 'AMD64'" in marker
+
+
+def test_the_pardiso_marker_leaves_macs_and_arm_out(project: dict) -> None:
+    packaging = pytest.importorskip("packaging.markers")
+    (requirement,) = project["optional-dependencies"]["pardiso"]
+    marker = packaging.Marker(requirement.split(";")[1])
+    wanted = {
+        ("win32", "AMD64"): True,
+        ("linux", "x86_64"): True,
+        ("linux", "aarch64"): False,
+        ("darwin", "arm64"): False,
+        ("darwin", "x86_64"): False,
+    }
+    for (system, machine), expected in wanted.items():
+        environment = {"sys_platform": system, "platform_machine": machine}
+        assert marker.evaluate(environment) is expected, (system, machine)
+
+
+def test_no_test_job_installs_pardiso_on_a_mac(repo_root: Path) -> None:
+    text = (repo_root / ".github" / "workflows" / "tests.yml").read_text(encoding="utf-8")
+    lines = [line for line in text.splitlines() if not line.lstrip().startswith("#")]
+    text = "\n".join(lines)
+    jobs = re.split(r"\n  (?=[\w-]+:\n    )", text.split("\njobs:\n")[1])
+    with_pardiso = [job for job in jobs if "pardiso" in job.lower()]
+    assert len(with_pardiso) == 1
+    job = with_pardiso[0]
+    assert "macos" not in job
+    # It runs where the solver exists, and names those systems itself.
+    assert "os: [ubuntu-latest, windows-latest]" in job
+    assert "runs-on: ${{ matrix.os }}" in job
+    # The jobs that do run on a Mac install nothing of it.
+    for other in jobs:
+        if "macos" in other:
+            assert "pardiso" not in other.lower()
+
+
+def test_readme_says_how_to_install_the_faster_solver(
+    repo_root: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    text = (repo_root / "README.md").read_text(encoding="utf-8")
+    section = text.split("\n## Install\n")[1].split("\n## ")[0]
+    commands = re.findall(r"```\n(.*?)\n```", section, flags=re.DOTALL)
+    assert 'pip install "polecraft[mesh,pardiso]"' in commands
+    flat = " ".join(section.split())
+    assert "not open source" in flat and "MKL" in flat
+    assert "on a Mac" in flat  # where it cannot be had
+    assert "From version 0.0.2" in flat  # the released version has no solver yet
+    assert "a third of a second" in flat  # the cost of loading it
+    assert "Without it" in flat  # what happens when it is not installed
+    assert 'SuperLU stays the default' in flat and 'solver="pardiso"' in flat  # used by name only
+    # The command in the message a user gets is one the README explains.
+    from polecraft.core import compute
+    from polecraft.core.compute import install_hint
+
+    # As on a machine the solver exists for, whatever this one is.
+    monkeypatch.setattr(compute, "_machine", lambda: ("linux", "x86_64"))
+    assert install_hint("pardiso") == 'pip install "polecraft[pardiso]"'
+    assert install_hint("pardiso") in flat
 
 
 def test_gmsh_is_only_an_optional_dependency(project: dict) -> None:
