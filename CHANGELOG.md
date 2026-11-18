@@ -55,6 +55,14 @@ releases.
   The README has the figures side by side, with the time each program took.
   This checks the 2D solver, not the motor: both programs solve the same
   2D model, with no end effects.
+- `polecraft solve <design.yaml>`: meshes a design, solves its field at
+  rotor angle 0 for a given current (`--current`, `--advance`), prints
+  torque, flux linkage, the convergence of the solve and a timing report,
+  and saves a picture of the field. The steel and the magnet are stand-ins
+  until the package has material data, and the command says so.
+- Pictures of a solved field (`polecraft.plot.plot_field`, `draw_field`):
+  flux density as colour with a scale in tesla, field lines, and
+  optionally the outline of every region.
 - Nine more example scripts in `examples/`: winding layouts, material
   models, solving a motor, torque against current, the slice against the
   whole machine, a picture of the field, choosing a solver, and two

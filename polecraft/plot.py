@@ -1,17 +1,27 @@
-"""Pictures of a machine: the mesh, coloured by what each region is."""
+"""Pictures of a machine: its mesh, coloured by region, and its solved field."""
 
 from __future__ import annotations
 
+import math
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 import numpy as np
+from matplotlib import colormaps
 from matplotlib.backends.backend_agg import FigureCanvasAgg
-from matplotlib.collections import PolyCollection
+from matplotlib.collections import LineCollection, PolyCollection
+from matplotlib.colors import ListedColormap
 from matplotlib.figure import Figure
 from matplotlib.patches import Patch
+from matplotlib.tri import Triangulation
+from mpl_toolkits.axes_grid1 import make_axes_locatable
 
 from polecraft.core.geometry import Geometry, Region
 from polecraft.core.mesh import Mesh
+
+if TYPE_CHECKING:
+    from polecraft.core.problem import Problem
+    from polecraft.core.solver import Solution
 
 STEEL = "#9aa1ab"
 AIR = "#eef4fa"
@@ -25,6 +35,12 @@ EDGE = "#30363d"
 COIL_OUT = "#5a6068"
 
 FILE_TYPES = (".png", ".svg", ".pdf")
+
+# Flux density from pale yellow to mid blue. The darkest end of the colour
+# map is left out, so that the dark field lines and region outlines drawn
+# over it still show at the top of the scale.
+FIELD_COLOURS = ListedColormap(colormaps["YlGnBu"](np.linspace(0.0, 0.7, 256)), name="field")
+FIELD_LINE = "#101418"
 
 
 def lighter(colour: str, amount: float = 0.55) -> str:
@@ -115,5 +131,100 @@ def plot_mesh(mesh: Mesh, geometry: Geometry, path: str | Path, title: str = "")
     """
     path = picture_path(path)
     figure = draw_mesh(mesh, geometry, title=title)
+    figure.savefig(path, dpi=200, bbox_inches="tight")
+    return path
+
+
+def draw_field(
+    problem: Problem,
+    solution: Solution,
+    title: str = "",
+    lines: int = 25,
+    largest: float | None = None,
+    outlines: Geometry | None = None,
+) -> Figure:
+    """Draw a solved field and return the figure.
+
+    Each triangle is coloured by its flux density, with a scale in tesla,
+    and ``lines`` field lines are drawn over it. They are lines of equal
+    potential, evenly spaced in potential, so where they crowd the flux
+    density is high. ``largest`` is the top of the colour scale in tesla;
+    left out, it is the largest flux density in the model. With
+    ``outlines``, the outline of every region of that geometry is drawn
+    too, at rotor angle 0. Axes are in millimetres.
+    """
+    if solution.potential.shape != (len(problem.nodes),) or solution.flux_density.shape != (
+        len(problem.triangles),
+        2,
+    ):
+        raise ValueError("the solution does not belong to this problem: the sizes differ")
+    if isinstance(lines, bool) or not isinstance(lines, (int, np.integer)) or lines < 0:
+        raise ValueError(f"lines must be a whole number, zero or more, not {lines!r}")
+    flux_density = np.hypot(solution.flux_density[:, 0], solution.flux_density[:, 1])
+    if largest is None:
+        # With no field at all there is still a scale to draw.
+        largest = float(flux_density.max()) if flux_density.size and flux_density.max() > 0 else 1.0
+    elif not (math.isfinite(largest) and largest > 0.0):
+        raise ValueError(f"largest must be a flux density above zero, in tesla, not {largest}")
+
+    millimetres = problem.nodes * 1e3
+    surface = Triangulation(millimetres[:, 0], millimetres[:, 1], problem.triangles)
+    figure = Figure(figsize=(10, 8))
+    FigureCanvasAgg(figure)
+    axes = figure.add_subplot()
+    # One colour per triangle: the flux density is constant over each.
+    shading = axes.tripcolor(
+        surface, facecolors=flux_density, cmap=FIELD_COLOURS, vmin=0.0, vmax=largest
+    )
+    if outlines is not None:
+        loops = [region.polygon(1e-6) * 1e3 for region in outlines.regions]
+        axes.add_collection(
+            LineCollection(
+                [np.vstack([loop, loop[:1]]) for loop in loops],
+                colors=EDGE, linewidths=0.8, label="outlines",
+            )
+        )
+    low, high = float(solution.potential.min()), float(solution.potential.max())
+    if lines and high > low:
+        levels = np.linspace(low, high, lines + 2)[1:-1]
+        drawn = axes.tricontour(
+            surface, solution.potential, levels=levels,
+            colors=FIELD_LINE, linewidths=0.35, linestyles="solid",
+        )
+        drawn.set_label("field lines")
+    axes.set_aspect("equal")
+    axes.set_xlabel("x (mm)")
+    axes.set_ylabel("y (mm)")
+    if title:
+        axes.set_title(title)
+    # A scale as tall as the picture, in its own place beside it, so that a
+    # long title passes above it and not behind it.
+    scale = make_axes_locatable(axes).append_axes("right", size="4%", pad=0.15)
+    figure.colorbar(
+        shading, cax=scale, label="flux density (T)",
+        extend="max" if flux_density.size and flux_density.max() > largest else "neither",
+    )
+    return figure
+
+
+def plot_field(
+    problem: Problem,
+    solution: Solution,
+    path: str | Path,
+    title: str = "",
+    lines: int = 25,
+    largest: float | None = None,
+    outlines: Geometry | None = None,
+) -> Path:
+    """Save a picture of a solved field. Returns the file written.
+
+    Flux density as colour with field lines over it, as ``draw_field``
+    draws them. The file type follows the extension: ``.png``, ``.svg`` or
+    ``.pdf``.
+    """
+    path = picture_path(path)
+    figure = draw_field(
+        problem, solution, title=title, lines=lines, largest=largest, outlines=outlines
+    )
     figure.savefig(path, dpi=200, bbox_inches="tight")
     return path

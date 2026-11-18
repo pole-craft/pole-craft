@@ -70,6 +70,9 @@ The `polecraft mesh` command (`polecraft/cli.py`) runs steps 1 to 3 and
 saves a picture with `polecraft/plot.py`. `polecraft/timing.py` times the
 stages. `examples/mesh_a_design.py` does the same from Python.
 
+The `polecraft solve` command runs all six steps and saves a picture of
+the field, with a stand-in steel and magnet until there is material data.
+
 ## What each package does
 
 **`polecraft/core/`** is the part that knows nothing about motor types. It

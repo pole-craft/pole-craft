@@ -58,6 +58,18 @@ polecraft mesh qdd_outer_36s42p.yaml
 
 This writes `qdd_outer_36s42p_mesh.png` in the current folder and prints the mesh size and how long each stage took. Only the slice of the motor that repeats is meshed; add `--full` for the whole machine, `-o` to choose the output file (`.png`, `.svg` or `.pdf`), and `--size 0.5` for a finer mesh.
 
+From version 0.0.2, which is not released yet (until then, install from a clone of the repository as described under "Development setup"), the field can be solved and drawn as well:
+
+```
+polecraft solve qdd_outer_36s42p.yaml --current 10
+```
+
+This solves the magnetic field at one rotor position with 10 A peak in the phases, prints the torque, the flux linked by each phase and how the solve converged, and writes `qdd_outer_36s42p_field.png`: flux density as colour, with field lines and the outline of every part over it. The options of `polecraft mesh` work here too (a mesh much coarser than `--size 5` is refused as too coarse to solve), and `--advance` shifts the current, in electrical degrees.
+
+![Flux density and field lines in the repeating slice of the 36-slot, 42-pole motor at 10 A](https://raw.githubusercontent.com/pole-craft/pole-craft/main/docs/images/field_36s42p.png)
+
+Real material data is not in the package yet. `polecraft solve` uses a stand-in steel curve made from a formula and a stand-in magnet (1.2 T unless `--remanence` says otherwise), and says so in what it prints, so its numbers show how the tool behaves, not how a motor performs. It solves a 2D model with no end effects, at rotor angle 0 only.
+
 The design files are plain YAML, with lengths in millimetres. The dimensions in the examples are placeholders typical of each motor size, not measured or optimised designs. The design-file format may change between 0.0.x versions.
 
 ## Use from Python
@@ -94,7 +106,7 @@ Scripts in the [examples folder](https://github.com/pole-craft/pole-craft/tree/m
 | [solve_a_motor.py](https://github.com/pole-craft/pole-craft/blob/main/examples/solve_a_motor.py) | Solve the field of a motor; torque, flux linkage, convergence and timing reports | yes |
 | [torque_against_current.py](https://github.com/pole-craft/pole-craft/blob/main/examples/torque_against_current.py) | Torque at several currents, showing the steel saturate | yes |
 | [slice_against_whole_machine.py](https://github.com/pole-craft/pole-craft/blob/main/examples/slice_against_whole_machine.py) | The repeating slice gives the whole machine's torque and flux linkage for a fraction of the work | yes |
-| [picture_of_the_field.py](https://github.com/pole-craft/pole-craft/blob/main/examples/picture_of_the_field.py) | Save a picture of flux density and field lines | yes |
+| [picture_of_the_field.py](https://github.com/pole-craft/pole-craft/blob/main/examples/picture_of_the_field.py) | Save a picture of flux density, field lines and region outlines | yes |
 | [choose_a_solver.py](https://github.com/pole-craft/pole-craft/blob/main/examples/choose_a_solver.py) | List the sparse solvers on your machine and time each | yes |
 | [core_with_an_air_gap.py](https://github.com/pole-craft/pole-craft/blob/main/examples/core_with_an_air_gap.py) | A hand-built saturating core, checked against the magnetic circuit formula | no |
 | [inductance_of_a_coil.py](https://github.com/pole-craft/pole-craft/blob/main/examples/inductance_of_a_coil.py) | Inductance of a hand-built coil from its flux linkage, checked against a formula | no |

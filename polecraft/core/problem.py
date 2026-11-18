@@ -34,6 +34,10 @@ if TYPE_CHECKING:
 USUAL = {"air": AIR, "copper": COPPER}
 
 
+class MeshMismatch(ValueError):
+    """The regions of a mesh are not those of the machine it is used with."""
+
+
 @dataclass(frozen=True, eq=False)
 class Gap:
     """A ring of air between the fixed and the turning part, to take torque in.
@@ -343,7 +347,7 @@ def _geometry_of(machine: Machine, mesh: Mesh) -> Geometry:
             and np.all(np.abs(meshed - exact) <= AREA_MISMATCH * exact)
         ):
             return geometry
-    raise ValueError("the mesh does not belong to this machine: its regions are not the machine's")
+    raise MeshMismatch("the mesh does not belong to this machine: its regions are not the machine's")
 
 
 def _rotor_is_outside(geometry: Geometry) -> bool:

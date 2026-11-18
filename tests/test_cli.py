@@ -8,6 +8,7 @@ import tomllib
 import types
 from pathlib import Path
 
+import numpy as np
 import pytest
 
 import polecraft
@@ -177,6 +178,325 @@ def test_upper_case_extension_is_accepted(
     assert (tmp_path / "MOTOR.PNG").read_bytes().startswith(PNG_SIGNATURE)
 
 
+# The solve command
+
+
+STAND_INS = "materials: stand-ins, not the grades the design names"
+
+
+def solve_output(capsys: pytest.CaptureFixture, *arguments: str) -> str:
+    assert main(["solve", *arguments]) == 0
+    output = capsys.readouterr()
+    assert output.err == ""
+    return output.out
+
+
+def value(out: str, start: str) -> float:
+    """The first number on the line that starts with some words."""
+    (line,) = [line for line in out.splitlines() if line.strip().startswith(start)]
+    return float(re.search(r"[-+]?\d+\.\d+", line.split(start)[1]).group())
+
+
+@pytest.mark.parametrize("design", shipped_designs(), ids=lambda path: path.stem)
+def test_solve_command_writes_a_picture_of_the_field(
+    needs_gmsh: None, design: Path, tmp_path: Path, capsys: pytest.CaptureFixture
+) -> None:
+    picture = tmp_path / "field.png"
+    out = solve_output(capsys, str(design), "--current", "5", "-o", str(picture))
+    data = picture.read_bytes()
+    assert data.startswith(PNG_SIGNATURE) and len(data) > 50_000
+    assert design.name in out and f"picture: {picture}" in out
+    assert "repeating slice" in out and "converged in" in out
+    assert value(out, "torque:") > 0.05
+    assert STAND_INS in out
+
+
+def test_solve_command_prints_what_the_python_interface_gives(
+    needs_gmsh: None, reference: Path, tmp_path: Path, capsys: pytest.CaptureFixture
+) -> None:
+    from polecraft.core.materials import Magnet, load_material
+    from polecraft.core.mesh import build_mesh
+    from polecraft.core.post import flux_linkage, torque
+    from polecraft.core.problem import build_problem
+    from polecraft.core.solver import solve
+    from polecraft.design import load_design
+    from polecraft.machines import machine_for
+
+    out = solve_output(capsys, str(reference), "--current", "10", "-o", str(tmp_path / "f.png"))
+    machine = machine_for(load_design(reference))
+    mesh = build_mesh(machine.build_geometry())
+    # The stand-ins the command says it uses.
+    materials = {
+        "M270-35A": load_material("generic_35A_placeholder"),
+        "N42SH": Magnet(remanence=1.2, relative_permeability=1.05),
+    }
+    problem = build_problem(machine, mesh, materials, current=10.0)
+    solution = solve(problem)
+    assert "36 slots, 42 poles" in out
+    assert f"mesh: {len(mesh.nodes)} nodes, {len(mesh.triangles)} triangles" in out
+    assert "current: 10 A peak, advance 0 electrical degrees, rotor angle 0" in out
+    assert value(out, "torque:") == pytest.approx(torque(problem, solution), abs=6e-4)
+    for phase, linked in flux_linkage(problem, solution).items():
+        assert value(out, f"flux linkage of phase {phase}:") == pytest.approx(linked * 1e3, abs=6e-4)
+    assert solution.report() in out
+    steel = value(out, "flux density in the steel:")
+    b = np.linalg.norm(solution.flux_density, axis=1)
+    in_steel = np.array([not m.linear for m in problem.materials])[problem.triangle_material]
+    assert steel == pytest.approx(np.percentile(b[in_steel], 99), abs=6e-3)
+    assert 1.2 < steel < 2.5
+
+
+def test_solve_command_names_the_stand_in_materials(
+    needs_gmsh: None, reference: Path, tmp_path: Path, capsys: pytest.CaptureFixture
+) -> None:
+    out = solve_output(capsys, str(reference), "-o", str(tmp_path / "f.png"))
+    lines = out.splitlines()
+    start = lines.index(f"  {STAND_INS}")
+    assert lines[start + 1] == "    steel M270-35A: generic_35A_placeholder, a curve from a formula"
+    assert lines[start + 2] == "    magnet N42SH: remanence 1.2 T, relative permeability 1.05"
+    assert "show how the tool behaves, not how this motor performs" in out
+    assert "2D, no end effects" in out
+
+
+def test_solve_command_without_current_says_why_there_is_no_torque(
+    needs_gmsh: None, reference: Path, tmp_path: Path, capsys: pytest.CaptureFixture
+) -> None:
+    out = solve_output(capsys, str(reference), "-o", str(tmp_path / "f.png"))
+    assert "current: 0 A peak (give --current for torque)" in out
+    assert "  torque: 0.000 N m" in out.splitlines()  # no minus sign on a rounded zero
+
+
+def test_solve_command_prints_a_timing_report(
+    needs_gmsh: None, reference: Path, tmp_path: Path, capsys: pytest.CaptureFixture
+) -> None:
+    out = solve_output(capsys, str(reference), "-o", str(tmp_path / "f.png"))
+    lines = out.splitlines()
+    report = lines[lines.index("Timing") + 1 :]
+    names = [line.split("  ")[1].strip() for line in report]
+    assert names == [
+        "load libraries", "load design", "geometry", "mesh", "solve", "results", "picture", "total",
+    ]
+    seconds = [float(line.split()[-2]) for line in report]
+    assert sum(seconds[:-1]) == pytest.approx(seconds[-1], abs=0.004)
+    assert "sparse solver: superlu" in out
+
+
+def test_field_picture_is_named_after_the_design_by_default(
+    needs_gmsh: None, reference: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.chdir(tmp_path)
+    assert main(["solve", str(reference)]) == 0
+    assert [path.name for path in tmp_path.iterdir()] == ["qdd_outer_36s42p_field.png"]
+
+
+def test_solve_command_options(
+    needs_gmsh: None, reference: Path, tmp_path: Path, capsys: pytest.CaptureFixture
+) -> None:
+    picture = str(tmp_path / "f.svg")
+    base = value(solve_output(capsys, str(reference), "--current", "10", "-o", picture), "torque:")
+    text = (tmp_path / "f.svg").read_text(encoding="utf-8")
+    assert "<svg" in text
+    assert "qdd_outer_36s42p.yaml: flux density at 10 A, stand-in steel and magnet" in text
+
+    out = solve_output(capsys, str(reference), "--current", "-10", "-o", picture)
+    assert "current: -10 A peak" in out
+    assert value(out, "torque:") < -0.9 * base
+
+    # A quarter turn of advance puts the current where it makes no torque.
+    out = solve_output(capsys, str(reference), "--current", "10", "--advance", "90", "-o", picture)
+    assert "advance 90 electrical degrees" in out
+    assert abs(value(out, "torque:")) < 0.05 * base
+
+    out = solve_output(capsys, str(reference), "--current", "10", "--full", "-o", picture)
+    assert "whole machine: 462 regions" in out
+    assert value(out, "torque:") == pytest.approx(base, rel=0.005)
+
+    out = solve_output(capsys, str(reference), "--current", "10", "--size", "2", "-o", picture)
+    assert value(out, "torque:") == pytest.approx(base, rel=0.03)
+    assert "mesh: 990 nodes" in out
+
+    out = solve_output(capsys, str(reference), "--current", "10", "--solver", "banded", "-o", picture)
+    assert "sparse solver: banded" in out
+    assert value(out, "torque:") == pytest.approx(base, abs=2e-3)
+
+    weaker = solve_output(capsys, str(reference), "--current", "10", "--remanence", "0.6", "-o", picture)
+    assert "magnet N42SH: remanence 0.6 T" in weaker
+    assert value(weaker, "torque:") < 0.7 * base
+
+
+def test_solve_command_refuses_what_it_cannot_do(
+    needs_gmsh: None,
+    reference: Path,
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def meshed(*arguments: object, **keywords: object) -> None:
+        pytest.fail("meshed before checking the options")
+
+    picture = str(tmp_path / "f.png")
+    for options, message in (
+        (["--solver", "fastest"], "polecraft: unknown solver 'fastest'"),
+        (["--size", "0"], "polecraft: size must be a number greater than 0"),
+        (["--size", "100"], "polecraft: the mesh is too coarse to solve at --size 100"),
+        (["--remanence", "-1"], "polecraft: remanence must be zero or more"),
+        (["--current", "nan"], "polecraft: current must be a finite number"),
+        (["--advance", "inf"], "polecraft: advance must be a finite number"),
+    ):
+        with monkeypatch.context() as patch:
+            if options[0] != "--size":  # a bad size is found by the mesher itself
+                patch.setattr("polecraft.core.mesh.build_mesh", meshed)
+            assert main(["solve", str(reference), "-o", picture, *options]) == 1
+        output = capsys.readouterr()
+        assert output.err.startswith(message), options
+        assert "Traceback" not in output.err
+    assert list(tmp_path.iterdir()) == []
+
+
+def test_solve_command_checks_the_picture_path_before_any_work(
+    gmsh_or_stand_in: None,
+    reference: Path,
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    with monkeypatch.context() as patch:
+        patch.setattr(
+            "polecraft.cli.load_design", lambda path: pytest.fail("worked before checking the path")
+        )
+        assert main(["solve", str(reference), "-o", str(tmp_path / "field.jpg")]) == 1
+    output = capsys.readouterr()
+    assert output.out == "" and "must end in .png, .svg or .pdf" in output.err
+    assert main(["solve", str(tmp_path / "nowhere.yaml")]) == 1
+    assert "design file not found" in capsys.readouterr().err
+
+
+def test_a_solve_that_does_not_converge_is_reported_in_one_line(
+    needs_gmsh: None,
+    reference: Path,
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from polecraft.core import solver
+
+    def fails(problem, **options):
+        raise solver.ConvergenceError("no convergence in 30 iterations", (1.0,), (1.0,))
+
+    monkeypatch.setattr(solver, "solve", fails)
+    assert main(["solve", str(reference), "-o", str(tmp_path / "f.png")]) == 1
+    error = capsys.readouterr().err
+    assert error.startswith("polecraft: no convergence in 30 iterations\n")
+    assert "Traceback" not in error
+    assert list(tmp_path.iterdir()) == []
+
+
+def test_a_solver_that_is_not_installed_is_reported_in_one_plain_line(
+    needs_gmsh: None,
+    reference: Path,
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from polecraft.core import compute
+
+    # As on a machine PARDISO exists for, but without its package.
+    monkeypatch.setattr(compute, "_supported", lambda name: True)
+    monkeypatch.setattr(compute, "_usable", lambda name: name not in compute._EXTRAS)
+    assert main(["solve", str(reference), "--solver", "pardiso", "-o", str(tmp_path / "f.png")]) == 0
+    output = capsys.readouterr()
+    assert "sparse solver: superlu" in output.out
+    assert output.err == (
+        "polecraft: solver 'pardiso' is not installed, so 'superlu' is used instead; "
+        'to install it: pip install "polecraft[pardiso]"\n'
+    )
+
+
+def test_stator_and_rotor_may_be_of_different_steels(
+    needs_gmsh: None, reference: Path, tmp_path: Path, capsys: pytest.CaptureFixture
+) -> None:
+    text = reference.read_text(encoding="utf-8")
+    assert "  rotor: M270-35A" in text
+    design = tmp_path / "two_steels.yaml"
+    design.write_text(text.replace("  rotor: M270-35A", "  rotor: OtherSteel"), encoding="utf-8")
+    out = solve_output(capsys, str(design), "--current", "10", "-o", str(tmp_path / "f.png"))
+    assert "    steel M270-35A: generic_35A_placeholder, a curve from a formula" in out
+    assert "    steel OtherSteel: generic_35A_placeholder, a curve from a formula" in out
+    assert value(out, "torque:") == pytest.approx(3.187, abs=2e-3)
+
+
+def test_a_magnet_named_like_a_steel_is_refused(
+    needs_gmsh: None, reference: Path, tmp_path: Path, capsys: pytest.CaptureFixture
+) -> None:
+    text = reference.read_text(encoding="utf-8")
+    assert "  material: N42SH" in text
+    design = tmp_path / "same_name.yaml"
+    design.write_text(text.replace("  material: N42SH", "  material: M270-35A"), encoding="utf-8")
+    assert main(["solve", str(design), "-o", str(tmp_path / "f.png")]) == 1
+    error = capsys.readouterr().err
+    assert error == (
+        "polecraft: M270-35A is named as the magnet and as a steel; give them different names\n"
+    )
+    assert [path.name for path in tmp_path.iterdir()] == ["same_name.yaml"]
+
+
+def test_the_solve_command_draws_the_outlines_of_the_regions_it_solved(
+    needs_gmsh: None,
+    reference: Path,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import polecraft.plot as plot
+
+    seen = {}
+    real = plot.plot_field
+
+    def recording(problem, solution, path, **keywords):
+        seen.update(keywords)
+        return real(problem, solution, path, **keywords)
+
+    monkeypatch.setattr(plot, "plot_field", recording)
+    assert main(["solve", str(reference), "--full", "-o", str(tmp_path / "f.png")]) == 0
+    assert len(seen["outlines"].regions) == 462  # the whole machine, as solved
+    assert "stand-in steel and magnet" in seen["title"]
+
+
+def test_a_fault_in_the_program_is_not_dressed_up_as_a_message(
+    gmsh_or_stand_in: None, reference: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    def broken(path: Path) -> None:
+        raise NotImplementedError
+
+    monkeypatch.setattr("polecraft.cli.load_design", broken)
+    with pytest.raises(NotImplementedError):
+        main(["solve", str(reference), "-o", str(tmp_path / "f.png")])
+
+
+def test_help_describes_the_solve_command(capsys: pytest.CaptureFixture) -> None:
+    with pytest.raises(SystemExit):
+        main(["solve", "--help"])
+    text = " ".join(capsys.readouterr().out.split())
+    for option in ("--output", "--current", "--advance", "--full", "--size", "--solver", "--remanence"):
+        assert option in text
+    assert f"Needs Gmsh: {INSTALL}" in text
+    assert "the steel and the magnet are stand-ins" in text  # said before anyone runs it
+    assert "<design name>_field.png" in text
+    assert "rotor angle 0" in text
+
+
+def test_solve_command_without_gmsh_never_shows_a_traceback(reference: Path, tmp_path: Path) -> None:
+    done = run_without_gmsh("solve", str(reference), "-o", str(tmp_path / "f.png"))
+    assert done.returncode == 1
+    assert done.stdout == ""
+    assert done.stderr == NO_GMSH
+    assert list(tmp_path.iterdir()) == []
+    # Gmsh comes before everything, a bad picture name included.
+    bad = run_without_gmsh("solve", str(reference), "-o", str(tmp_path / "f.jpg"))
+    assert bad.returncode == 1 and bad.stderr == NO_GMSH
+    shown = run_without_gmsh("solve", "--help")
+    assert shown.returncode == 0 and "usage: polecraft solve" in shown.stdout
+
+
 # Failures
 
 
@@ -279,7 +599,7 @@ def test_version_and_help_work_without_gmsh() -> None:
     version = run_without_gmsh("--version")
     assert version.returncode == 0
     assert version.stdout.strip() == f"polecraft {polecraft.__version__}"
-    for arguments in (["--help"], ["mesh", "--help"]):
+    for arguments in (["--help"], ["mesh", "--help"], ["solve", "--help"]):
         shown = run_without_gmsh(*arguments)
         assert shown.returncode == 0, shown.stderr
         assert "usage: polecraft" in shown.stdout
@@ -289,6 +609,7 @@ def test_version_and_help_work_without_gmsh() -> None:
 # Every command, with arguments to run it by, and whether it needs Gmsh.
 COMMANDS = {
     "mesh": (["mesh", "nowhere.yaml"], True),
+    "solve": (["solve", "nowhere.yaml"], True),
 }
 
 
