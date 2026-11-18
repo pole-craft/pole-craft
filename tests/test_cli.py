@@ -311,9 +311,14 @@ def test_solve_command_options(
     assert "whole machine: 462 regions" in out
     assert value(out, "torque:") == pytest.approx(base, rel=0.005)
 
+    def nodes(text: str) -> int:
+        return int(re.search(r"mesh: (\d+) nodes", text).group(1))
+
+    usual = nodes(solve_output(capsys, str(reference), "--current", "10", "-o", picture))
     out = solve_output(capsys, str(reference), "--current", "10", "--size", "2", "-o", picture)
     assert value(out, "torque:") == pytest.approx(base, rel=0.03)
-    assert "mesh: 990 nodes" in out
+    # Fewer nodes; how many exactly depends on the mesher's build.
+    assert 0.2 * usual < nodes(out) < 0.6 * usual
 
     out = solve_output(capsys, str(reference), "--current", "10", "--solver", "banded", "-o", picture)
     assert "sparse solver: banded" in out
