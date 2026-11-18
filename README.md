@@ -101,6 +101,37 @@ Scripts in the [examples folder](https://github.com/pole-craft/pole-craft/tree/m
 
 The motor examples use a placeholder steel curve and a stand-in magnet, not the grades the design names, so their numbers show how the tool behaves, not how the motor performs.
 
+## How the solver is checked
+
+The field solver, which is not in a release yet, is checked in two ways. Each part is first tested on a case with a known answer (the field round a wire, a magnetic circuit with an air gap, the inductance of a coil). The whole is then compared with [FEMM](https://www.femm.info), an independent 2D field program, on the 36-slot, 42-pole example motor. Pole-Craft writes the FEMM model from the same regions, steel table, magnet and currents that its own solver is given (`polecraft.femm`), and FEMM's results are stored in [tests/data/femm](https://github.com/pole-craft/pole-craft/tree/main/tests/data/femm) with the script that makes them, so the comparison runs with the tests and needs no FEMM.
+
+Results at one rotor position, Pole-Craft on its default mesh of the repeating slice against FEMM on a fine mesh of the whole machine:
+
+| Quantity | Pole-Craft | FEMM | Difference |
+|---|---|---|---|
+| Torque at 10 A | 3.187 N m | 3.191 N m | 0.1 % |
+| Torque at 40 A (steel saturating) | 9.527 N m | 9.506 N m | 0.2 % |
+| Torque with no current | 0.000 N m | 0.000 N m | none, as the symmetry of that position requires |
+| Flux linked by phase A, no current | 10.014 mWb | 10.005 mWb | 0.1 % |
+| Largest phase flux linkage at 40 A | 16.553 mWb | 16.603 mWb | 0.3 % |
+| Main wave of the air-gap flux density, no current | 1.029 T | 1.028 T | 0.1 % |
+| Main wave of the air-gap flux density, 40 A | 0.980 T | 0.978 T | 0.2 % |
+
+Over all three currents the two agree within 0.3 % on torque, on the flux linked by each phase within 0.7 % of the largest phase's, and within 0.3 % on the main wave of the flux density in the air gap. A phase whose linkage is near zero at that position differs by up to 3 % of its own small value. Making Pole-Craft's mesh twice as fine changes its torque by under 0.2 %, and FEMM's own answer moves by 0.1 % between its normal and its fine mesh.
+
+Time for the same job (mesh the motor and solve the three currents), measured once on one laptop:
+
+| Run | Nodes | Time |
+|---|---|---|
+| Pole-Craft, repeating slice, default mesh | 2,480 | 0.5 s |
+| Pole-Craft, whole machine, mesh four times finer | 159,043 | 43 s |
+| FEMM, whole machine, normal mesh | 70,246 | 112 s |
+| FEMM, whole machine, fine mesh | 229,310 | 943 s |
+
+Most of the gain comes from solving only the slice that repeats, on a mesh no finer than the answer needs; on the whole machine with a mesh of similar size Pole-Craft is still several times quicker. FEMM's times include starting the program and drawing the model.
+
+This is a check of the 2D solver only. Both programs use the same placeholder steel curve and stand-in magnet and solve the same 2D model, so it says nothing yet about how close either is to a real motor: end effects, which matter in short, wide motors, and real material data come later. FEMM does far more than this comparison uses, and it remains the reference Pole-Craft is checked against.
+
 ## Roadmap
 
 - [x] Parametric geometry and meshing for QDD motors (outer rotor; inner rotor to follow)

@@ -125,6 +125,84 @@ def flux_linkage(problem: Problem, solution: Solution) -> dict[str, float]:
     }
 
 
+def gap_flux_density(
+    problem: Problem, solution: Solution, angles: ArrayLike
+) -> tuple[NDArray[np.float64], NDArray[np.float64]]:
+    """Flux density in the middle of the air gap, in tesla, at given angles.
+
+    Returns the radial part (positive outwards) and the tangential part
+    (positive counter-clockwise) at each angle, in radians from the x axis,
+    on the circle halfway between the two radii of the problem's gap. The
+    values are those of the gap triangle each point lies in, so they step
+    from triangle to triangle.
+
+    An angle outside the meshed part is answered from the part that is
+    meshed: the field repeats, with its sign reversed from one part to the
+    next when the coupling is anti-periodic.
+    """
+    _check_pair(problem, solution)
+    gap = problem.gap
+    if gap is None:
+        raise ValueError("the problem has no air gap marked, so there is no gap field to read")
+    angles = np.asarray(angles, dtype=float)
+    if angles.ndim != 1 or not np.all(np.isfinite(angles)):
+        raise ValueError("angles must be a list of finite numbers, in radians")
+    radius = 0.5 * (gap.inner_radius + gap.outer_radius)
+    corners = problem.nodes[problem.triangles[gap.triangles]]
+    origin = corners[:, 0]
+    # Each row solves for the two weights of a point on the triangle's sides.
+    sides = np.stack([corners[:, 1] - origin, corners[:, 2] - origin], axis=2)
+    inverse = np.linalg.inv(sides)
+    turn = 2.0 * np.pi
+    span = turn / problem.repeats
+    radial = np.zeros(angles.shape)
+    around = np.zeros(angles.shape)
+    missing = np.ones(angles.shape, dtype=bool)
+    slack = 1e-9  # a point on a shared side belongs to either triangle
+    # The angles each triangle spans, measured from its own middle so that
+    # the jump of the angle at pi does not split it. A point is only tried
+    # against the triangles whose span holds its angle.
+    middle = np.arctan2(corners[:, :, 1].sum(axis=1), corners[:, :, 0].sum(axis=1))
+    offset = (np.arctan2(corners[:, :, 1], corners[:, :, 0]) - middle[:, None] + np.pi) % turn - np.pi
+    low = (middle + offset.min(axis=1) - slack) % turn
+    high = low + (offset.max(axis=1) - offset.min(axis=1)) + 2.0 * slack
+    for part in range(problem.repeats):
+        todo = np.flatnonzero(missing)
+        if todo.size == 0:
+            break
+        # Turned back by whole parts until it falls in the meshed one. The
+        # radial and tangential parts of the field turn with the point.
+        turned = angles[todo] - part * span
+        reduced = turned % turn
+        order = np.argsort(reduced, kind="stable")
+        ordered = reduced[order]
+        pairs_triangle, pairs_point = [], []
+        for shift in (0.0, turn):  # a span may run past the end of the turn
+            first = np.searchsorted(ordered, low - shift, side="left")
+            count = np.searchsorted(ordered, high - shift, side="right") - first
+            within = np.arange(count.sum()) - np.repeat(np.cumsum(count) - count, count)
+            pairs_triangle.append(np.repeat(np.arange(len(low)), count))
+            pairs_point.append(order[np.repeat(first, count) + within])
+        triangle, point = np.concatenate(pairs_triangle), np.concatenate(pairs_point)
+        position = radius * np.column_stack([np.cos(turned[point]), np.sin(turned[point])])
+        weights = np.einsum("kij,kj->ki", inverse[triangle], position - origin[triangle])
+        inside = (weights >= -slack).all(axis=1) & (weights.sum(axis=1) <= 1.0 + slack)
+        triangle, point = triangle[inside], point[inside]
+        # One triangle for each point: the lowest-numbered of those that hold it.
+        by_point = np.lexsort((triangle, point))
+        point, firsts = np.unique(point[by_point], return_index=True)
+        b = solution.flux_density[gap.triangles[triangle[by_point][firsts]]]
+        if problem.antiperiodic and part % 2:
+            b = -b
+        cos, sin = np.cos(turned[point]), np.sin(turned[point])
+        radial[todo[point]] = b[:, 0] * cos + b[:, 1] * sin
+        around[todo[point]] = b[:, 1] * cos - b[:, 0] * sin
+        missing[todo[point]] = False
+    if missing.any():
+        raise ValueError("the gap triangles do not cover the middle of the gap all the way round")
+    return radial, around
+
+
 def torque(problem: Problem, solution: Solution) -> float:
     """Torque on the turning part of the whole machine, in N m.
 

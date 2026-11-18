@@ -8,7 +8,9 @@
 #
 # The curve has the general shape of a non-oriented electrical steel, which
 # is enough to exercise the solver. Do not use it to design a motor, and do
-# not compare results made with it against other tools or measurements.
+# not compare results made with it against measurements or against results
+# made with real steel data. Two programs given this same table can be
+# checked against each other, which is how the solver is compared with FEMM.
 # Measured curves for real grades will be added to this folder with their
 # source.
 name: generic_35A_placeholder

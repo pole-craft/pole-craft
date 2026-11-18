@@ -41,6 +41,20 @@ releases.
 - Results from a solved field (`polecraft.core.post`): torque on the rotor
   from the Maxwell stress in the air gap, and the flux linked by each
   phase, both for the whole machine at rotor angle 0.
+- Flux density in the middle of the air gap at any angle
+  (`polecraft.core.post.gap_flux_density`).
+- A check of the solver against FEMM, an independent field program.
+  `polecraft.femm` writes the same model as a FEMM script, from the same
+  regions, steel table, magnet and currents; the package never runs FEMM.
+  FEMM's results for the reference design are stored in `tests/data/femm/`
+  with the script that makes them, and the tests compare the solver with
+  them. With the placeholder steel and magnet, at rotor angle 0 and at 0,
+  10 and 40 A: torque within 0.3 %, the flux linked by each phase within
+  0.7 % of the largest, and the main wave of the gap field within 0.3 %.
+  Making the solver's mesh twice as fine changes its torque by under 0.2 %.
+  The README has the figures side by side, with the time each program took.
+  This checks the 2D solver, not the motor: both programs solve the same
+  2D model, with no end effects.
 - Nine more example scripts in `examples/`: winding layouts, material
   models, solving a motor, torque against current, the slice against the
   whole machine, a picture of the field, choosing a solver, and two

@@ -9,7 +9,13 @@ import numpy as np
 import pytest
 
 from polecraft.core.materials import AIR, MU0, LinearMaterial, Magnet, load_material
-from polecraft.core.post import flux_linkage, linkage_per_metre, ring_torque_per_metre, torque
+from polecraft.core.post import (
+    flux_linkage,
+    gap_flux_density,
+    linkage_per_metre,
+    ring_torque_per_metre,
+    torque,
+)
 from polecraft.core.problem import Gap, Problem, build_problem
 from polecraft.core.solver import shape_gradients, solve
 
@@ -454,6 +460,100 @@ def test_linkage_needs_one_potential_per_node_and_one_density_per_triangle() -> 
         linkage_per_metre(nodes, triangles, np.ones((4, 1)), np.ones(2))
     with pytest.raises(ValueError, match="turn density"):
         linkage_per_metre(nodes, triangles, np.ones(4), np.ones(3))
+
+
+# Flux density in the air gap
+
+
+def test_gap_flux_density_of_a_uniform_field(ring: dict) -> None:
+    # The same field in every triangle: its radial part at angle t is
+    # bx cos t + by sin t, and its tangential part by cos t - bx sin t.
+    problem = ring["problem"]
+    uniform = np.tile([0.3, -0.5], (len(problem.triangles), 1))
+    solution = dataclasses.replace(ring["solution"], flux_density=uniform)
+    angles = np.linspace(0.0, 2.0 * math.pi, 97, endpoint=False) + 0.01
+    radial, around = gap_flux_density(problem, solution, angles)
+    assert radial == pytest.approx(0.3 * np.cos(angles) - 0.5 * np.sin(angles), abs=1e-12)
+    assert around == pytest.approx(-0.5 * np.cos(angles) - 0.3 * np.sin(angles), abs=1e-12)
+
+
+def test_gap_flux_density_points_out_of_a_magnet_magnetised_outwards(ring: dict) -> None:
+    # Pole 0 is magnetised outwards and spans the first eighth of the circle.
+    middles = (np.arange(8) + 0.5) * 2.0 * math.pi / 8 + 1e-3  # off the triangle sides
+    radial, around = gap_flux_density(ring["problem"], ring["solution"], middles)
+    assert np.all(radial[0::2] > 0.3) and np.all(radial[1::2] < -0.3)
+    assert radial[1::2] == pytest.approx(-radial[0::2], rel=1e-6)
+    assert np.all(np.abs(around) < 0.2 * np.abs(radial))
+
+
+def test_gap_flux_density_is_the_value_of_the_triangle_at_mid_gap(ring: dict) -> None:
+    problem, solution = ring["problem"], ring["solution"]
+    gap = problem.gap
+    radius = 0.5 * (gap.inner_radius + gap.outer_radius)
+    corners = problem.nodes[problem.triangles[gap.triangles]]
+    angles = np.linspace(0.0, 2.0 * math.pi, 50, endpoint=False) + 0.013
+    radial, around = gap_flux_density(problem, solution, angles)
+    for k, angle in enumerate(angles):
+        point = radius * np.array([math.cos(angle), math.sin(angle)])
+
+        def side(a: np.ndarray, b: np.ndarray) -> float:
+            return (b[0] - a[0]) * (point[1] - a[1]) - (b[1] - a[1]) * (point[0] - a[0])
+
+        # Inside a triangle the point is on the same side of all three edges.
+        holds = [
+            number
+            for number, (a, b, c) in zip(gap.triangles, corners)
+            if abs(np.sign([side(a, b), side(b, c), side(c, a)]).sum()) == 3
+        ]
+        assert len(holds) == 1
+        bx, by = solution.flux_density[holds[0]]
+        assert radial[k] == pytest.approx(bx * math.cos(angle) + by * math.sin(angle), rel=1e-12)
+        assert around[k] == pytest.approx(by * math.cos(angle) - bx * math.sin(angle), rel=1e-12)
+
+
+@pytest.mark.parametrize("model_poles", [1, 2, 4])
+def test_gap_flux_density_of_a_slice_is_that_of_the_whole_machine(
+    ring: dict, model_poles: int
+) -> None:
+    # One pole is an anti-periodic slice: the sign must turn over from each
+    # part to the next. Two and four poles repeat as they are.
+    part = ring_machine(model_poles=model_poles)
+    assert part["problem"].antiperiodic == (model_poles == 1)
+    solution = solve(part["problem"])
+    # Off the triangle sides; also below zero and beyond a full turn.
+    angles = np.linspace(-1.0, 7.0, 401) + 1e-3
+    whole = gap_flux_density(ring["problem"], ring["solution"], angles)
+    found = gap_flux_density(part["problem"], solution, angles)
+    assert np.abs(whole[0]).max() > 0.3
+    assert found[0] == pytest.approx(whole[0], abs=1e-8)
+    assert found[1] == pytest.approx(whole[1], abs=1e-8)
+
+
+def test_gap_flux_density_gives_back_the_shape_it_was_asked_for(ring: dict) -> None:
+    radial, around = gap_flux_density(ring["problem"], ring["solution"], [])
+    assert radial.shape == around.shape == (0,)
+    radial, around = gap_flux_density(ring["problem"], ring["solution"], [0.1, 0.2, 0.3])
+    assert radial.shape == around.shape == (3,)
+
+
+def test_gap_flux_density_checks_what_it_is_given(ring: dict) -> None:
+    problem, solution = ring["problem"], ring["solution"]
+    nodes, triangles = grid(2, 2, 1.0, 1.0)
+    plain = Problem(nodes=nodes, triangles=triangles, materials=(AIR,), fixed_nodes=[0])
+    with pytest.raises(ValueError, match="no air gap"):
+        gap_flux_density(plain, solve(plain), [0.0])
+    for wrong in ([[0.0, 1.0]], [0.0, math.nan], 1.0):
+        with pytest.raises(ValueError, match="angles"):
+            gap_flux_density(problem, solution, wrong)
+    with pytest.raises(ValueError, match="solution does not belong to this problem"):
+        gap_flux_density(problem, dataclasses.replace(solution, potential=solution.potential[:-1]), [0.0])
+    # A gap that is only part of the circle cannot answer for the rest.
+    gap = problem.gap
+    half = dataclasses.replace(
+        problem, gap=Gap(gap.triangles[: len(gap.triangles) // 2], gap.inner_radius, gap.outer_radius)
+    )
+    with pytest.raises(ValueError, match="all the way round"):
+        gap_flux_density(half, solution, np.linspace(0.0, 6.0, 50))
 
 
 # The reference motor, with a placeholder steel curve
