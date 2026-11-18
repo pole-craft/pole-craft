@@ -229,18 +229,20 @@ def build_problem(
     current: float = 0.0,
     advance: float = 0.0,
 ) -> Problem:
-    """The field problem of a machine on its mesh, at rotor angle 0.
+    """The field problem of a machine on its mesh, at the mesh's rotor angle.
 
     ``mesh`` is the mesh of the machine's repeating slice or of the whole
-    machine. ``materials`` maps the grade names used in the design (steel,
+    machine, as made by ``build_mesh`` or turned to a rotor angle by
+    ``polecraft.core.motion.rotate``. ``materials`` maps the grade names used in the design (steel,
     magnet) to their models; a magnet grade needs a ``Magnet``. Air and
     copper are known already. ``current`` is the peak phase current in
     amperes and ``advance`` its angle ahead of the back-EMF in electrical
-    radians, both as in ``Machine.excitation``.
+    radians, both as in ``Machine.excitation``, which is asked for the
+    currents at the mesh's rotor angle.
 
     Each coil side carries its turns times its phase current, spread evenly
     over its area. Each magnet is magnetised to its grade's remanence along
-    its own direction. The inner and outer surfaces of the machine are field
+    its own direction, which turns with the rotor. The inner and outer surfaces of the machine are field
     lines (potential 0): no flux leaves the iron there. The cut edges of a
     slice are coupled as the mesh says.
 
@@ -270,7 +272,7 @@ def build_problem(
 
     air = index_of("air")
     triangle_material[:] = air  # the band, which is no region, is air
-    phase_currents = machine.excitation(0.0, current, advance)
+    phase_currents = machine.excitation(mesh.rotor_angle, current, advance)
     area = mesh.triangle_areas()
     centre = mesh.nodes[mesh.triangles].mean(axis=1)
 
@@ -289,7 +291,11 @@ def build_problem(
                     f"'{region.material}' is the grade of {region.name}, "
                     "so its model must be a magnet"
                 )
-            remanence[inside] = grade.remanence * _directions(region.magnetisation, centre[inside])
+            # Only the rotor's regions have been turned with the mesh.
+            turn = mesh.rotor_turn if number >= len(geometry.stator) else 0.0
+            remanence[inside] = grade.remanence * _directions(
+                region.magnetisation, centre[inside], turn
+            )
 
     radius = np.hypot(mesh.nodes[:, 0], mesh.nodes[:, 1])
     on_surface = np.isclose(radius, geometry.inner_radius) | np.isclose(
@@ -356,10 +362,16 @@ def _rotor_is_outside(geometry: Geometry) -> bool:
     return math.hypot(x, y) > 0.5 * (geometry.band_inner_radius + geometry.band_outer_radius)
 
 
-def _directions(magnetisation: object, points: NDArray[np.float64]) -> NDArray[np.float64]:
-    """Unit vectors of a magnetisation at many points, shape (k, 2)."""
+def _directions(
+    magnetisation: object, points: NDArray[np.float64], turn: float = 0.0
+) -> NDArray[np.float64]:
+    """Unit vectors of a magnetisation at many points, shape (k, 2).
+
+    ``points`` are where the triangles are now, and ``turn`` the angle in
+    radians their region has been turned by since its geometry was built.
+    """
     if magnetisation.pattern == "parallel":
-        angle = np.full(len(points), magnetisation.axis_angle)
+        angle = np.full(len(points), magnetisation.axis_angle + turn)
     else:
         angle = np.arctan2(points[:, 1], points[:, 0])
     return magnetisation.polarity * np.column_stack([np.cos(angle), np.sin(angle)])

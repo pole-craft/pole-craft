@@ -6,12 +6,14 @@ comes back as plain arrays.
 
 The stator and the rotor are meshed by Gmsh, each in its own frame. The band
 of air between them is not: it is a single layer of triangles joining two
-rings of equally spaced nodes, built here. Turning the rotor by one node
-spacing only changes which nodes the band joins.
+rings of equally spaced nodes, built here. Turning the rotor only changes
+where its nodes are and which of them the band joins: ``join_band`` does
+that, and ``polecraft.core.motion`` chooses how for a rotor angle.
 """
 
 from __future__ import annotations
 
+import dataclasses
 import math
 from dataclasses import dataclass
 from types import ModuleType
@@ -28,15 +30,50 @@ MERGE = 1e-9
 
 
 @dataclass(frozen=True, eq=False)
+class Band:
+    """What it takes to join the two rings of the band at any rotor angle.
+
+    Both rings have a node every ``span / divisions``. The meshed nodes,
+    triangles and cut-edge pairs come first in the arrays of a mesh; the
+    copies of rotor nodes, the band triangles and the pairs of the copies
+    follow them. When the rotor turns its nodes move, and those last
+    entries are made anew; nothing else changes.
+    """
+
+    stator_ring: np.ndarray  # node numbers on the stator's band circle, in order of angle
+    rotor_ring: np.ndarray  # the same on the rotor's band circle
+    span: float  # angle the mesh covers, in radians
+    facing: int  # place on the rotor ring opposite place 0 of the stator ring, at rotor angle 0
+    rest: np.ndarray  # (n, 2) positions of the meshed nodes at rotor angle 0
+    triangles: int  # number of meshed triangles, the band's not counted
+    pairs: int  # number of periodic pairs on the cut edges
+
+    @property
+    def full(self) -> bool:
+        """Whether the rings go all the way round."""
+        return math.isclose(self.span, 2 * math.pi)
+
+    @property
+    def divisions(self) -> int:
+        """Node spacings around each ring, over the meshed angle."""
+        return len(self.stator_ring) - (0 if self.full else 1)
+
+
+@dataclass(frozen=True, eq=False)
 class Mesh:
     """A triangle mesh of a machine cross-section, or of its repeating slice.
 
-    Rotor nodes are at rotor angle 0. ``periodic`` lists node pairs
-    ``(node, original)``: the field at ``node`` equals the field at
-    ``original``, with the opposite sign if the mesh is antiperiodic. These
-    are the nodes on the far cut edge of the stator and of the rotor, and the
-    copies of rotor nodes that the band needs where the two slices do not
-    line up.
+    ``periodic`` lists node pairs ``(node, original)``: the field at ``node``
+    equals the field at ``original``, with the opposite sign if the mesh is
+    antiperiodic. These are the nodes on the far cut edge of the stator and
+    of the rotor, and the copies of rotor nodes that the band needs where the
+    two slices do not line up.
+
+    ``rotor_angle`` is the angle the rotor has been turned to, in radians,
+    counter-clockwise from the position the geometry is built in.
+    ``rotor_turn`` is the angle its nodes were actually turned by: the same
+    less a whole number of repeats of the field, so that the rotor slice
+    stays next to the stator slice.
     """
 
     nodes: np.ndarray  # (n, 2) positions in metres
@@ -47,6 +84,9 @@ class Mesh:
     periodic: np.ndarray  # (k, 2) node numbers: node, and the node it repeats
     antiperiodic: bool
     band_divisions: int  # node spacings around the band, over the meshed angle
+    band: Band | None = None  # how to join the band again; None if there is no band
+    rotor_angle: float = 0.0
+    rotor_turn: float = 0.0
 
     def triangle_areas(self) -> np.ndarray:
         """Area of every triangle in square metres."""
@@ -150,26 +190,18 @@ def build_mesh(geometry: Geometry, size: float = 1.0) -> Mesh:
         pairs += _cut_edge_pairs(nodes, ~rotor_nodes, geometry.stator_start_angle, geometry.span_angle)
         pairs += _cut_edge_pairs(nodes, rotor_nodes, geometry.rotor_start_angle, geometry.span_angle)
 
-    band = _build_band(geometry, nodes, rotor_nodes, divisions, full)
-    nodes = np.vstack([nodes, band.new_nodes]) if len(band.new_nodes) else nodes
-    rotor_nodes = np.concatenate([rotor_nodes, np.ones(len(band.new_nodes), dtype=bool)])
-    pairs += band.pairs
-    triangles = np.vstack([triangles, band.triangles])
-    triangle_region = np.concatenate(
-        [triangle_region, np.full(len(band.triangles), len(names), dtype=int)]
-    )
-
-    triangles = _counter_clockwise(nodes, triangles)
-    return Mesh(
+    meshed = Mesh(
         nodes=nodes,
-        triangles=triangles,
+        triangles=_counter_clockwise(nodes, triangles),
         triangle_region=triangle_region,
         region_names=tuple(names) + (BAND,),
         rotor_nodes=rotor_nodes,
         periodic=np.array(pairs, dtype=int).reshape(-1, 2),
         antiperiodic=geometry.antiperiodic,
         band_divisions=divisions,
+        band=_band_rings(geometry, nodes, rotor_nodes, divisions, len(triangles), len(pairs)),
     )
+    return join_band(meshed)
 
 
 def _check_edge_lengths(geometry: Geometry, shortest: float) -> None:
@@ -223,6 +255,11 @@ def _band_divisions(geometry: Geometry, target: float) -> int:
             break
     else:
         raise ValueError("stator and rotor slices cannot be given matching band nodes")
+
+    # The band cells of a slice are cut on alternating diagonals, and the
+    # pattern must carry on into the next slice: an even number of cells.
+    if base % 2 and not math.isclose(geometry.span_angle, 2 * math.pi):
+        base *= 2
 
     middle = 0.5 * (geometry.band_inner_radius + geometry.band_outer_radius)
     wanted = geometry.span_angle * middle / target
@@ -407,13 +444,6 @@ def _cut_edge_pairs(
     return [(int(f), int(n)) for f, n in zip(far, near)]
 
 
-@dataclass
-class _Band:
-    triangles: np.ndarray
-    new_nodes: np.ndarray
-    pairs: list[tuple[int, int]]
-
-
 def _ring(nodes: np.ndarray, selected: np.ndarray, radius: float, start: float) -> np.ndarray:
     """Numbers of the selected nodes on a circle, in order of angle from ``start``."""
     distance = np.hypot(nodes[:, 0], nodes[:, 1])
@@ -424,72 +454,147 @@ def _ring(nodes: np.ndarray, selected: np.ndarray, radius: float, start: float) 
     return chosen[np.argsort(angle)]
 
 
-def _build_band(
-    geometry: Geometry, nodes: np.ndarray, rotor_nodes: np.ndarray, divisions: int, full: bool
-) -> _Band:
-    """Join the stator ring and the rotor ring with one layer of triangles.
-
-    Both rings have a node every ``span / divisions``. Stator node i faces the
-    rotor node at the same angle. Where the rotor slice does not reach, the
-    band uses a copy of the rotor node one slice away, turned into place and
-    tied to its original as a periodic pair.
-    """
+def _band_rings(
+    geometry: Geometry,
+    nodes: np.ndarray,
+    rotor_nodes: np.ndarray,
+    divisions: int,
+    triangles: int,
+    pairs: int,
+) -> Band:
+    """The two rings of band nodes that Gmsh made, in order of angle."""
     span = geometry.span_angle
-    spacing = span / divisions
     stator_radius, _ = _band_arcs(geometry.stator, geometry)
     rotor_radius, _ = _band_arcs(geometry.rotor, geometry)
     stator_ring = _ring(nodes, ~rotor_nodes, stator_radius, geometry.stator_start_angle)
     rotor_ring = _ring(nodes, rotor_nodes, rotor_radius, geometry.rotor_start_angle)
 
-    expected = divisions if full else divisions + 1
+    expected = divisions if math.isclose(span, 2 * math.pi) else divisions + 1
     if len(stator_ring) != expected or len(rotor_ring) != expected:
         raise ValueError(
             f"expected {expected} nodes on each band ring, found "
             f"{len(stator_ring)} and {len(rotor_ring)}"
         )
-
-    # Rotor ring node facing stator ring node 0.
-    shift = round((geometry.stator_start_angle - geometry.rotor_start_angle) / spacing)
-
-    new_nodes: list[np.ndarray] = []
-    pairs: list[tuple[int, int]] = []
-    copies: dict[int, int] = {}
-
-    def facing(i: int) -> int:
-        """Number of the rotor-side node at the angle of stator ring node i."""
-        j = i + shift
-        if full:
-            return int(rotor_ring[j % divisions])
-        if 0 <= j <= divisions:
-            return int(rotor_ring[j])
-        if j not in copies:
-            # One slice before the rotor's first node, or after its last.
-            turns = -1 if j < 0 else 1
-            original = int(rotor_ring[j - turns * divisions])
-            c, s = math.cos(turns * span), math.sin(turns * span)
-            x, y = nodes[original]
-            copies[j] = len(nodes) + len(new_nodes)
-            new_nodes.append(np.array([c * x - s * y, s * x + c * y]))
-            pairs.append((copies[j], original))
-        return copies[j]
-
-    triangles = []
-    for i in range(divisions):
-        following = (i + 1) % divisions if full else i + 1
-        s0, s1 = int(stator_ring[i]), int(stator_ring[following])
-        r0, r1 = facing(i), facing(i + 1)
-        # Each four-sided cell is cut along a diagonal, alternating from one
-        # cell to the next. Cut all the same way, the triangles would all lean
-        # one way round the gap and bias a torque worked out in the band.
-        if i % 2 == 0:
-            triangles += [(s0, s1, r1), (s0, r1, r0)]
-        else:
-            triangles += [(s0, s1, r0), (s1, r1, r0)]
-
-    return _Band(
-        triangles=np.array(triangles, dtype=int),
-        new_nodes=np.array(new_nodes).reshape(-1, 2),
+    spacing = span / divisions
+    return Band(
+        stator_ring=stator_ring,
+        rotor_ring=rotor_ring,
+        span=span,
+        facing=round((geometry.stator_start_angle - geometry.rotor_start_angle) / spacing),
+        rest=nodes,
+        triangles=triangles,
         pairs=pairs,
+    )
+
+
+def _turned(points: np.ndarray, angle: float | np.ndarray) -> np.ndarray:
+    """Points turned about the origin, each by its own angle if several are given."""
+    c, s = np.cos(angle), np.sin(angle)
+    x, y = points[:, 0], points[:, 1]
+    return np.column_stack([c * x - s * y, s * x + c * y])
+
+
+def join_band(mesh: Mesh, steps: int = 0, turn: float = 0.0) -> Mesh:
+    """The mesh with its rotor turned and the band joined to suit.
+
+    The rotor nodes are turned by ``turn`` radians from where they were
+    meshed, and the band joins each stator ring node to the rotor ring node
+    ``steps`` places back from the one it faced then. ``turn`` must be within
+    half a node spacing of ``steps`` spacings.
+
+    The nodes of the rotor ring are turned by the whole spacings only, so
+    they always face the stator ring's nodes and the band triangles keep
+    their shape at every angle. What is left of the turn, half a spacing at
+    most, is taken up by the rotor's own triangles next to the ring, which
+    lean a little. Torque is taken in the band; taken in triangles that
+    lean, it would be badly off. No triangle is added, removed or renumbered
+    outside the band.
+
+    Where the rotor slice does not reach, the band uses a copy of the rotor
+    node one slice away, turned into place and tied to its original as a
+    periodic pair. Raises ValueError if the rotor slice would be more than
+    one slice away from the stator's, if the mesh has no band, or if the
+    band of a slice has an odd number of cells.
+
+    The mesh returned has ``turn`` as its rotor angle.
+    """
+    band = mesh.band
+    if band is None:
+        raise ValueError("the mesh has no band to join")
+    divisions = band.divisions
+    if divisions % 2 and not band.full:
+        # Cut on alternating diagonals, an odd number of cells would meet
+        # the next slice with two cells cut the same way, which biases the
+        # torque taken in the band.
+        raise ValueError(
+            f"the band of a slice needs an even number of node spacings, not {divisions}"
+        )
+    whole = steps * band.span / divisions
+    if abs(turn - whole) > 0.5 * band.span / divisions * (1 + 1e-9):
+        raise ValueError(
+            f"a turn of {turn} rad is more than half a node spacing from {steps} steps"
+        )
+    count = len(band.rest)
+    first = band.facing - steps  # rotor ring place opposite stator ring place 0
+    places = first + np.arange(divisions + 1)
+
+    nodes = band.rest.copy()
+    rotor = mesh.rotor_nodes[:count]
+    nodes[rotor] = _turned(band.rest[rotor], turn)
+    nodes[band.rotor_ring] = _turned(band.rest[band.rotor_ring], whole)
+
+    if band.full:
+        facing = band.rotor_ring[places % divisions]
+        following = np.arange(1, divisions + 1) % divisions
+        copies = np.zeros((0, 2))
+        pairs = np.zeros((0, 2), dtype=int)
+    else:
+        if not -divisions <= first <= divisions:
+            raise ValueError(
+                f"{steps} steps would put the rotor slice more than one slice from the stator's"
+            )
+        # A place before the rotor's first node, or after its last, is that
+        # of a node one slice on, seen one slice back or forward.
+        slices = np.where(places < 0, -1, np.where(places > divisions, 1, 0))
+        original = band.rotor_ring[places - slices * divisions]
+        copied = slices != 0
+        facing = original.copy()
+        facing[copied] = count + np.arange(copied.sum())
+        following = np.arange(1, divisions + 1)
+        copies = _turned(nodes[original[copied]], slices[copied] * band.span)
+        pairs = np.column_stack([facing[copied], original[copied]])
+
+    # Each four-sided cell is cut along a diagonal, alternating from one cell
+    # to the next. Cut all the same way, the triangles would all lean one way
+    # round the gap and bias a torque worked out in the band.
+    even = np.arange(divisions) % 2 == 0
+    s0, s1 = band.stator_ring[:divisions], band.stator_ring[following]
+    r0, r1 = facing[:-1], facing[1:]
+    cells = np.stack(
+        [
+            np.column_stack([s0, s1, np.where(even, r1, r0)]),
+            np.column_stack([np.where(even, s0, s1), r1, r0]),
+        ],
+        axis=1,
+    ).reshape(-1, 3)
+
+    nodes = np.vstack([nodes, copies])
+    triangles = np.vstack([mesh.triangles[: band.triangles], _counter_clockwise(nodes, cells)])
+    region = np.concatenate(
+        [
+            mesh.triangle_region[: band.triangles],
+            np.full(len(cells), mesh.region_names.index(BAND), dtype=int),
+        ]
+    )
+    return dataclasses.replace(
+        mesh,
+        nodes=nodes,
+        triangles=triangles,
+        triangle_region=region,
+        rotor_nodes=np.concatenate([rotor, np.ones(len(copies), dtype=bool)]),
+        periodic=np.vstack([mesh.periodic[: band.pairs], pairs]).astype(int),
+        rotor_angle=float(turn),
+        rotor_turn=float(turn),
     )
 
 

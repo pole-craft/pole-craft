@@ -67,7 +67,7 @@ def region_colour(region: Region) -> str:
 def draw_mesh(mesh: Mesh, geometry: Geometry, title: str = "") -> Figure:
     """Draw the mesh, coloured by region, and return the figure.
 
-    The rotor is drawn at rotor angle 0. Axes are in millimetres.
+    The rotor is drawn where the mesh has it. Axes are in millimetres.
     """
     colours = [region_colour(region) for region in geometry.regions] + [BAND_COLOUR]
     if len(colours) != len(mesh.region_names):
@@ -151,7 +151,8 @@ def draw_field(
     density is high. ``largest`` is the top of the colour scale in tesla;
     left out, it is the largest flux density in the model. With
     ``outlines``, the outline of every region of that geometry is drawn
-    too, at rotor angle 0. Axes are in millimetres.
+    too, as built, at rotor angle 0: they do not suit a problem whose
+    rotor has been turned. Axes are in millimetres.
     """
     if solution.potential.shape != (len(problem.nodes),) or solution.flux_density.shape != (
         len(problem.triangles),

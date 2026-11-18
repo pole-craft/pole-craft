@@ -491,3 +491,15 @@ def test_edge_too_short_to_mesh_is_reported(reference: Design) -> None:
     geometry = machine_for(design).build_geometry()
     with pytest.raises(ValueError, match="magnet_gap_0.* too short to mesh"):
         build_mesh(geometry)
+
+
+@pytest.mark.parametrize("size", [1.0, 2.0])
+def test_band_of_a_slice_has_an_even_number_of_spacings(reference: Design, size: float) -> None:
+    # A slice of three slots and one pole: its arcs alone would give an odd
+    # number, and the alternating cut of the band cells would then not carry
+    # on from one slice into the next.
+    design = variant(reference, slots=18, poles=6)
+    mesh = build_mesh(machine_for(design).build_geometry(), size)
+    assert mesh.antiperiodic
+    assert mesh.band_divisions % 2 == 0
+    assert mesh.band.divisions == mesh.band_divisions

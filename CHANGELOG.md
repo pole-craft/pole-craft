@@ -5,6 +5,36 @@ numbers follow [semantic versioning](https://semver.org); while the version
 is 0.0.x the design-file format and the Python interface may change between
 releases.
 
+## [Unreleased]
+
+### Added
+
+- Rotor rotation (`polecraft.core.motion`): `rotate(mesh, angle)` gives the
+  mesh with the rotor turned to any angle. Nothing is meshed again: the
+  rotor's nodes are moved and only the band of air between stator and rotor
+  is joined again, in a fraction of a millisecond. `build_problem` then
+  sets up the field problem at that angle, with the magnets turned and the
+  phase currents following the rotor.
+- `step_angle(mesh)`: the angle between neighbouring nodes of the band.
+  At whole multiples of it no triangle changes shape. Between them the
+  rotor's air next to the band leans by up to half a spacing, which adds
+  mesh noise to the torque that falls with a finer mesh. On the reference
+  motor with the default mesh it is about 0.004 N m: 0.2 % of the torque at
+  10 A, but about twice that motor's cogging torque, which the default mesh
+  does not resolve at any angle (it needs `size` 0.5 or finer).
+
+### Changed
+
+- A `Mesh` now records the rotor angle it has been turned to and how its
+  band is joined (`rotor_angle`, `rotor_turn`, `band`). Meshes at rotor
+  angle 0 are the same as before, node for node.
+- The band of a slice always gets an even number of node spacings. With an
+  odd number, which some slot and pole counts gave (a slice of 9 slots,
+  for one), the torque of the slice was off by up to about 1 %. The
+  example designs were not affected.
+- Field pictures: region outlines are drawn as built, at rotor angle 0,
+  and do not follow a turned rotor yet.
+
 ## [0.0.2] - 2026-11-18
 
 The first release with a field solver. It solves the magnetic field of an

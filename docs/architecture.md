@@ -5,12 +5,11 @@ code. This describes the package as it stands in the repository, which can
 be ahead of the latest release; it will grow with the package.
 
 What works today: a design file is loaded and checked, turned into geometry,
-meshed, and the magnetic field is solved at one rotor position, with steel
-that saturates. Torque and the flux linked by each phase are read off the
-solved field. What is not built yet: rotation of the rotor, the studies
-(cogging, back-EMF, efficiency), losses, a full material library, and any
-machine other than the outer-rotor one. Nothing on the command line runs
-the solver yet; it is reached from Python.
+meshed, and the magnetic field is solved with steel that saturates, at any
+rotor angle. Torque and the flux linked by each phase are read off the
+solved field. What is not built yet: the studies (cogging, back-EMF,
+efficiency), losses, a full material library, and any machine other than
+the outer-rotor one. The command line solves at rotor angle 0 only.
 
 ## From design file to results
 
@@ -26,6 +25,9 @@ Machine
    v
 Geometry
    |  polecraft/core/mesh.py     triangles (needs Gmsh)
+   v
+Mesh
+   |  polecraft/core/motion.py   turn the rotor
    v
 Mesh
    |  polecraft/core/problem.py  materials, currents, magnets, boundaries
@@ -53,8 +55,9 @@ results
    phase each coil belongs to.
 3. `build_mesh` in `polecraft/core/mesh.py` meshes the regions with
    triangles and returns plain arrays. It also lists the node pairs on the
-   two cut edges of a slice, and says whether the field repeats there
-   unchanged or with its sign reversed.
+   two cut edges of a slice, and whether the field repeats there
+   unchanged or with its sign reversed. `rotate` in
+   `polecraft/core/motion.py` turns the rotor of a mesh.
 4. `build_problem` in `polecraft/core/problem.py` puts a material, a current
    density and a magnetisation on every triangle, and fixes the potential
    on the inner and outer surface. The material models are in
@@ -83,8 +86,9 @@ works with regions, materials, coils and magnets only.
   tooth-wound three-phase winding, and its winding factor.
 - `polecraft/core/mesh.py`: the mesher. It is the only module that uses
   Gmsh, and it imports Gmsh only when a mesh is asked for. The thin band of
-  air between stator and rotor is built here, not by Gmsh, so that the
-  rotor can later be turned without meshing again.
+  air between stator and rotor is built here, not by Gmsh.
+- `polecraft/core/motion.py`: turning the rotor. Its nodes are moved and
+  only the band is joined again; nothing is meshed twice.
 - `polecraft/core/materials.py`: reluctivity against flux density, from a
   BH table or a formula, and magnets. Material files are in
   `polecraft/data/materials/`. The one there now is a placeholder made from
