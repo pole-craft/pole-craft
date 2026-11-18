@@ -6,6 +6,7 @@ from typing import Any, Callable
 
 import pytest
 
+import polecraft
 from polecraft.design import design_from_dict
 from polecraft.validation import DesignError
 
@@ -57,6 +58,17 @@ VALID_DESIGN: dict[str, Any] = {
 @pytest.fixture
 def repo_root() -> Path:
     return REPO_ROOT
+
+
+@pytest.fixture
+def package_dir() -> Path:
+    """The folder of the polecraft package the tests import.
+
+    In a checkout that is the source tree. When the tests run from a source
+    distribution against an installed wheel, which has no source tree beside
+    it, it is the installed copy, and that is the one to check.
+    """
+    return Path(polecraft.__file__).resolve().parent
 
 
 @pytest.fixture

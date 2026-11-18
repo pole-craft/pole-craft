@@ -4,7 +4,7 @@
 
 Open-source design and simulation tool for quasi-direct-drive (QDD) motors.
 
-> **Status: early development (version 0.0.1).** What 0.0.1 can do: load a motor design file and check it, work out the winding layout and the slice of the motor that repeats, build the cross-section of an outer-rotor surface-magnet motor as labelled regions (steel, coils, magnets, air), mesh it with triangles and save a picture, from the `polecraft mesh` command or from Python. What it cannot do: **it does not simulate anything yet.** There is no field solver, so it reports no torque, back-EMF or losses, and inner-rotor motors are not supported. The roadmap below shows what comes next.
+> **Status: early development (version 0.0.2).** What 0.0.2 can do: load a motor design file and check it, work out the winding layout and the slice of the motor that repeats, build the cross-section of an outer-rotor surface-magnet motor, mesh it, solve its 2D magnetic field at one rotor position with saturating steel and permanent magnets, report the torque and the flux linked by each phase, and draw the field, from the `polecraft mesh` and `polecraft solve` commands or from Python. On the reference motor the solver agrees with FEMM within 0.3 % on torque. What it cannot do yet: **it has no real material data**, so its steel and magnet are stand-ins and its numbers show how the tool behaves, not how a motor performs. It solves one rotor position only, so there is no cogging torque, back-EMF over a cycle, ripple, losses or efficiency; it is 2D, without end effects; and inner-rotor motors are not supported. The roadmap below shows what comes next.
 
 ![Mesh of the repeating slice of a 36-slot, 42-pole outer-rotor motor](https://raw.githubusercontent.com/pole-craft/pole-craft/main/docs/images/mesh_36s42p.png)
 
@@ -34,13 +34,13 @@ pip install "polecraft[mesh]"
 
 A plain `pip install polecraft` has no mesher, because the mesher is [Gmsh](https://gmsh.info), which is GPL-licensed and so is kept as an optional extra that Pole-Craft calls but does not include. Without it, design files can still be loaded and checked and their geometry built from Python, and any command that needs a mesh stops with one line giving the install command above.
 
-From version 0.0.2, which has the field solver and is not released yet, a faster solver is optional. To install it as well:
+From version 0.0.2, which has the field solver, a faster solver is optional. To install it as well:
 
 ```
 pip install "polecraft[mesh,pardiso]"
 ```
 
-This adds [pypardiso](https://github.com/haasad/PyPardiso) and with it PARDISO from Intel's MKL, which makes a field solve quicker than the solver that is always there (SciPy's SuperLU): by about a tenth on a small model such as the slice of an example motor, and by a quarter or more on larger ones. MKL is free to use but not open source, which is why it is not installed by default. It exists for Intel and AMD processors on Windows and Linux only: on a Mac, or on an ARM processor, the command above installs everything else and leaves the faster solver out. Installing it does not switch it on: SuperLU stays the default, and PARDISO is used when you ask for it by name, `solve(problem, solver="pardiso")`. The first solve of a run takes about a third of a second longer while MKL loads, so the gain shows over many solves or on large models. Without it nothing is lost but speed: the timing report of a solve gives the command above. If you ask for `pardiso` by name where it is not installed, a warning says so and the work goes on with SuperLU. To add it to an existing install: `pip install "polecraft[pardiso]"`.
+This adds [pypardiso](https://github.com/haasad/PyPardiso) and with it PARDISO from Intel's MKL, which makes a field solve quicker than the solver that is always there (SciPy's SuperLU): by about a tenth on a small model such as the slice of an example motor, and by a quarter or more on larger ones. MKL is free to use but not open source, which is why it is not installed by default. It exists for Intel and AMD processors on Windows and Linux only: on a Mac, or on an ARM processor, the command above installs everything else and leaves the faster solver out. Installing it does not switch it on: SuperLU stays the default, and PARDISO is used when you ask for it by name, `solve(problem, solver="pardiso")`. The first solve of a run takes about a third of a second longer while MKL loads, so the gain shows over many solves or on large models. Without it nothing is lost but speed: the timing report of a solve made from Python (`Solution.timing_report()`) gives the command above; `polecraft solve` does not print it. If you ask for `pardiso` by name where it is not installed, a warning says so and the work goes on with SuperLU. To add it to an existing install: `pip install "polecraft[pardiso]"`.
 
 On Linux, Gmsh needs a few system libraries that servers, containers and WSL often lack. If `polecraft mesh` reports `libGLU.so.1: cannot open shared object file` (or a similar library name), install them. On Debian or Ubuntu:
 
@@ -58,13 +58,13 @@ polecraft mesh qdd_outer_36s42p.yaml
 
 This writes `qdd_outer_36s42p_mesh.png` in the current folder and prints the mesh size and how long each stage took. Only the slice of the motor that repeats is meshed; add `--full` for the whole machine, `-o` to choose the output file (`.png`, `.svg` or `.pdf`), and `--size 0.5` for a finer mesh.
 
-From version 0.0.2, which is not released yet (until then, install from a clone of the repository as described under "Development setup"), the field can be solved and drawn as well:
+From version 0.0.2 the field can be solved and drawn as well:
 
 ```
 polecraft solve qdd_outer_36s42p.yaml --current 10
 ```
 
-This solves the magnetic field at one rotor position with 10 A peak in the phases, prints the torque, the flux linked by each phase and how the solve converged, and writes `qdd_outer_36s42p_field.png`: flux density as colour, with field lines and the outline of every part over it. The options of `polecraft mesh` work here too (a mesh much coarser than `--size 5` is refused as too coarse to solve), and `--advance` shifts the current, in electrical degrees.
+This solves the magnetic field at one rotor position with 10 A peak in the phases, prints the torque, the flux linked by each phase and how the solve converged, and writes `qdd_outer_36s42p_field.png`: flux density as colour, with field lines and the outline of every part over it. The options of `polecraft mesh` work here too (a mesh too coarse to keep the areas of the design is refused, but a coarser mesh that is accepted can change the torque by several per cent; see the known limits in the changelog), and `--advance` shifts the current, in electrical degrees.
 
 ![Flux density and field lines in the repeating slice of the 36-slot, 42-pole motor at 10 A](https://raw.githubusercontent.com/pole-craft/pole-craft/main/docs/images/field_36s42p.png)
 
@@ -96,7 +96,7 @@ A longer example that also prints the winding layout is in [examples/mesh_a_desi
 
 ## Examples
 
-Scripts in the [examples folder](https://github.com/pole-craft/pole-craft/tree/main/examples) of the repository, each run with `python examples/<name>`. The first two run with the released 0.0.1. The rest use the field solver, which is in the repository and comes with version 0.0.2.
+Scripts in the [examples folder](https://github.com/pole-craft/pole-craft/tree/main/examples) of the repository, each run with `python examples/<name>`. They need version 0.0.2 or newer, which has the field solver.
 
 | Example | What it shows | Needs Gmsh |
 |---|---|---|
@@ -115,7 +115,7 @@ The motor examples use a placeholder steel curve and a stand-in magnet, not the 
 
 ## How the solver is checked
 
-The field solver, which is not in a release yet, is checked in two ways. Each part is first tested on a case with a known answer (the field round a wire, a magnetic circuit with an air gap, the inductance of a coil). The whole is then compared with [FEMM](https://www.femm.info), an independent 2D field program, on the 36-slot, 42-pole example motor. Pole-Craft writes the FEMM model from the same regions, steel table, magnet and currents that its own solver is given (`polecraft.femm`), and FEMM's results are stored in [tests/data/femm](https://github.com/pole-craft/pole-craft/tree/main/tests/data/femm) with the script that makes them, so the comparison runs with the tests and needs no FEMM.
+The field solver is checked in two ways. Each part is first tested on a case with a known answer (the field round a wire, a magnetic circuit with an air gap, the inductance of a coil). The whole is then compared with [FEMM](https://www.femm.info), an independent 2D field program, on the 36-slot, 42-pole example motor. Pole-Craft writes the FEMM model from the same regions, steel table, magnet and currents that its own solver is given (`polecraft.femm`), and FEMM's results are stored in [tests/data/femm](https://github.com/pole-craft/pole-craft/tree/main/tests/data/femm) with the script that makes them, so the comparison runs with the tests and needs no FEMM.
 
 Results at one rotor position, Pole-Craft on its default mesh of the repeating slice against FEMM on a fine mesh of the whole machine:
 
@@ -129,7 +129,7 @@ Results at one rotor position, Pole-Craft on its default mesh of the repeating s
 | Main wave of the air-gap flux density, no current | 1.029 T | 1.028 T | 0.1 % |
 | Main wave of the air-gap flux density, 40 A | 0.980 T | 0.978 T | 0.2 % |
 
-Over all three currents the two agree within 0.3 % on torque, on the flux linked by each phase within 0.7 % of the largest phase's, and within 0.3 % on the main wave of the flux density in the air gap. A phase whose linkage is near zero at that position differs by up to 3 % of its own small value. Making Pole-Craft's mesh twice as fine changes its torque by under 0.2 %, and FEMM's own answer moves by 0.1 % between its normal and its fine mesh.
+Over all three currents the two agree within 0.3 % on torque, on the flux linked by each phase within 0.7 % of the largest phase's, and within 0.3 % on the main wave of the flux density in the air gap. A phase whose linkage is near zero at that position differs by about 3 % of its own small value (3.2 % at 40 A). Making Pole-Craft's mesh twice as fine changes its torque by under 0.2 %, and FEMM's own answer moves by 0.1 % between its normal and its fine mesh.
 
 Time for the same job (mesh the motor and solve the three currents), measured once on one laptop:
 
@@ -147,7 +147,7 @@ This is a check of the 2D solver only. Both programs use the same placeholder st
 ## Roadmap
 
 - [x] Parametric geometry and meshing for QDD motors (outer rotor; inner rotor to follow)
-- [ ] 2D field solver with saturated steel and permanent magnets
+- [x] 2D field solver with saturated steel and permanent magnets (one rotor position)
 - [ ] Rotation: cogging torque, back-EMF, torque ripple
 - [ ] Material and winding library
 - [ ] Losses, torque-speed curve and efficiency map

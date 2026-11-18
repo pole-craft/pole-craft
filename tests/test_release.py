@@ -85,7 +85,10 @@ def test_the_pardiso_marker_leaves_macs_and_arm_out(project: dict) -> None:
 
 
 def test_no_test_job_installs_pardiso_on_a_mac(repo_root: Path) -> None:
-    text = (repo_root / ".github" / "workflows" / "tests.yml").read_text(encoding="utf-8")
+    workflow = repo_root / ".github" / "workflows" / "tests.yml"
+    if not workflow.exists():
+        pytest.skip("the workflow files are in the repository, not in a source distribution")
+    text = workflow.read_text(encoding="utf-8")
     lines = [line for line in text.splitlines() if not line.lstrip().startswith("#")]
     text = "\n".join(lines)
     jobs = re.split(r"\n  (?=[\w-]+:\n    )", text.split("\njobs:\n")[1])
@@ -112,7 +115,7 @@ def test_readme_says_how_to_install_the_faster_solver(
     flat = " ".join(section.split())
     assert "not open source" in flat and "MKL" in flat
     assert "on a Mac" in flat  # where it cannot be had
-    assert "From version 0.0.2" in flat  # the released version has no solver yet
+    assert "From version 0.0.2" in flat  # version 0.0.1 had no solver
     assert "a third of a second" in flat  # the cost of loading it
     assert "Without it" in flat  # what happens when it is not installed
     assert 'SuperLU stays the default' in flat and 'solver="pardiso"' in flat  # used by name only
@@ -151,7 +154,9 @@ def test_readme_says_how_to_install_and_test(repo_root: Path) -> None:
     assert "may change between 0.0.x versions" in text
 
 
-def test_readme_install_section_leads_with_the_mesh_extra(repo_root: Path) -> None:
+def test_readme_install_section_leads_with_the_mesh_extra(
+    repo_root: Path, package_dir: Path
+) -> None:
     text = (repo_root / "README.md").read_text(encoding="utf-8")
     section = text.split("\n## Install\n")[1].split("\n## ")[0]
     commands = re.findall(r"```\n(.*?)\n```", section, flags=re.DOTALL)
@@ -163,7 +168,7 @@ def test_readme_install_section_leads_with_the_mesh_extra(repo_root: Path) -> No
     assert "`pip install polecraft`" in telling[0]
     assert "Gmsh" in telling[0]
     # The command is the one the missing-Gmsh message gives.
-    source = (repo_root / "polecraft" / "core" / "mesh.py").read_text(encoding="utf-8")
+    source = (package_dir / "core" / "mesh.py").read_text(encoding="utf-8")
     assert "install it with: pip install \"polecraft[mesh]\"" in source
 
 

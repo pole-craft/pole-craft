@@ -5,7 +5,15 @@ numbers follow [semantic versioning](https://semver.org); while the version
 is 0.0.x the design-file format and the Python interface may change between
 releases.
 
-## [0.0.2] - unreleased
+## [0.0.2] - 2026-11-18
+
+The first release with a field solver. It solves the magnetic field of an
+outer-rotor surface-magnet motor at one rotor position, with saturating
+steel and permanent magnets, reports the torque and the flux linked by each
+phase, and draws the field. On the reference motor the solver agrees with
+FEMM within 0.3 % on torque, with the same placeholder materials in both.
+There is no real material data yet, so the numbers show how the tool
+behaves, not how a motor performs.
 
 ### Added
 
@@ -35,9 +43,9 @@ releases.
   only). SuperLU is the default; PARDISO is used when asked for by name
   (`solve(problem, solver="pardiso")`). Its first solve in a run takes
   about a third of a second longer while MKL loads, which the timing report
-  lists on its own line. Where it is not installed, the timing report says
-  how to install it, and asking for it by name gives a warning and the
-  solve carries on with SuperLU.
+  lists on its own line. Where it is not installed, the timing report of a
+  solution (`Solution.timing_report()`) says how to install it, and asking
+  for it by name gives a warning and the solve carries on with SuperLU.
 - Results from a solved field (`polecraft.core.post`): torque on the rotor
   from the Maxwell stress in the air gap, and the flux linked by each
   phase, both for the whole machine at rotor angle 0.
@@ -83,6 +91,47 @@ releases.
   has no mesher and that Gmsh is GPL-licensed.
 - When Gmsh is installed but cannot load, as on Linux without its system
   libraries, the message now says so and points to the README.
+
+### Known limits
+
+- One rotor position only (rotor angle 0). There is no rotation yet, so no
+  cogging torque, back-EMF over a cycle or torque ripple.
+- No real material data. The steel curve is a placeholder worked out from a
+  formula, `polecraft solve` uses a stand-in magnet, and the material names
+  in a design file are still not checked against a material library. Do not
+  use the results to judge a motor.
+- The comparison with FEMM is for one motor, at three currents, with the
+  same placeholder materials in both programs. It checks the 2D solver, not
+  the motor.
+- Two-dimensional only: no end effects, which matter in short, wide motors,
+  and no end windings, skew, losses or efficiency.
+- Torque and flux linkage for the whole machine are worked out from the
+  repeating slice, which assumes the slices are identical.
+- Outer-rotor surface-magnet motors only, with parallel-sided teeth. The
+  FEMM model is written for parallel magnetisation only, and the check
+  against FEMM is for that.
+- There is no air region outside the rotor yoke or inside the stator bore.
+  In FEMM, on the reference motor at 10 A and 40 A, adding air inside the
+  bore and out to 1.5 times the outer radius changed the torque by under
+  0.02 %. This was not checked with Pole-Craft's own solver.
+- Winding, lengthwise and temperature values are read but not used yet: for
+  example, nothing checks that the turns fit in the slot.
+- The mesh-refinement check and the FEMM comparison cover the default mesh
+  of the reference motor only. Coarser meshes are accepted without a
+  warning and give a different torque: on the reference motor at 10 A,
+  `--size 5` changed it by about 1 % and `--size 6` to `--size 8` by about
+  4 % to 5 %. `polecraft solve` refuses only a mesh so coarse that the
+  regions no longer have the areas of the design, and that point depends on
+  the design (`--size 10` on the reference motor). Use the default size, or
+  check with a finer mesh. The air-gap band is one layer of triangles, so
+  very fine meshes (`--size` below about 0.5) and slot and pole counts with
+  little in common give thin triangles there.
+- Solving needs the optional Gmsh package (`pip install "polecraft[mesh]"`).
+  The faster PARDISO solver is optional too and exists for Windows and
+  Linux on Intel and AMD processors only.
+- Pictures of the field are saved files; there is no window to click in.
+- Pictures of very fine meshes look dark, because the triangle edge lines do
+  not thin out. Meshing cannot be interrupted part-way.
 
 ## [0.0.1] - 2026-11-16
 
@@ -130,4 +179,5 @@ does not report torque, back-EMF or losses.
 - Meshing cannot be interrupted part-way; Ctrl-C takes effect when the mesher
   returns.
 
+[0.0.2]: https://github.com/pole-craft/pole-craft/releases/tag/v0.0.2
 [0.0.1]: https://github.com/pole-craft/pole-craft/releases/tag/v0.0.1

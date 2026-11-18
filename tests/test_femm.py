@@ -286,9 +286,9 @@ def test_air_is_meshed_finer_than_the_rest_and_fineness_divides_both(
 
 
 def test_the_steel_curve_is_the_table_of_the_material_file_point_for_point(
-    script: str, repo_root: Path
+    script: str, package_dir: Path
 ) -> None:
-    path = repo_root / "polecraft" / "data" / "materials" / "generic_35A_placeholder.yaml"
+    path = package_dir / "data" / "materials" / "generic_35A_placeholder.yaml"
     table = yaml.safe_load(path.read_text(encoding="utf-8"))["bh_curve"]
     points = calls(script, "mi_addbhpoint")
     assert len(points) == len(table) == 25

@@ -55,9 +55,16 @@ def test_document_names_files_and_modules(document: str) -> None:
     assert "polecraft/machines/" in named_paths(document)
 
 
-def test_every_path_in_the_document_exists(document: str, repo_root: Path) -> None:
+def found_at(path: str, repo_root: Path, package_dir: Path) -> Path:
+    """Where a path of the document is: the package in the package, the rest in the repository."""
+    return package_dir.parent / path if path.startswith("polecraft/") else repo_root / path
+
+
+def test_every_path_in_the_document_exists(
+    document: str, repo_root: Path, package_dir: Path
+) -> None:
     paths = named_paths(document) + paths_in_blocks(document)
-    missing = [path for path in paths if not (repo_root / path).exists()]
+    missing = [path for path in paths if not found_at(path, repo_root, package_dir).exists()]
     assert not missing, f"docs/architecture.md names paths that do not exist: {missing}"
 
 
@@ -66,9 +73,11 @@ def test_the_flow_diagram_is_checked_too(document: str) -> None:
     assert len(paths_in_blocks(document)) >= 5
 
 
-def test_folders_are_written_with_a_closing_slash(document: str, repo_root: Path) -> None:
+def test_folders_are_written_with_a_closing_slash(
+    document: str, repo_root: Path, package_dir: Path
+) -> None:
     for path in named_paths(document):
-        assert (repo_root / path).is_dir() == path.endswith("/"), path
+        assert found_at(path, repo_root, package_dir).is_dir() == path.endswith("/"), path
 
 
 def test_every_module_in_the_document_can_be_found(document: str) -> None:
@@ -76,10 +85,12 @@ def test_every_module_in_the_document_can_be_found(document: str) -> None:
     assert not missing, f"docs/architecture.md names modules that do not exist: {missing}"
 
 
-def test_every_core_and_machine_module_is_described(document: str, repo_root: Path) -> None:
+def test_every_core_and_machine_module_is_described(document: str, package_dir: Path) -> None:
     # A new module must be added to the document in the same step.
+    modules = [m for folder in ("core", "machines") for m in (package_dir / folder).glob("*.py")]
+    assert len(modules) >= 10  # the check below is not run over an empty list
     for folder in ("core", "machines"):
-        for module in sorted((repo_root / "polecraft" / folder).glob("*.py")):
+        for module in sorted((package_dir / folder).glob("*.py")):
             if module.name != "__init__.py":
                 assert f"polecraft/{folder}/{module.name}" in named_paths(document), module.name
 
@@ -137,10 +148,11 @@ def test_document_is_in_the_source_distribution(repo_root: Path) -> None:
     assert "graft docs" in lines
 
 
-def test_core_and_studies_do_not_name_a_machine_type(repo_root: Path) -> None:
+def test_core_and_studies_do_not_name_a_machine_type(package_dir: Path) -> None:
     # The rule the document states: only the machines package knows the types.
+    assert len(list((package_dir / "core").glob("*.py"))) >= 8  # not run over an empty list
     for folder in ("core", "studies"):
-        for module in sorted((repo_root / "polecraft" / folder).glob("*.py")):
+        for module in sorted((package_dir / folder).glob("*.py")):
             text = module.read_text(encoding="utf-8")
             for name in machine_types():
                 assert name not in text, f"{module.name} names the machine type {name}"
