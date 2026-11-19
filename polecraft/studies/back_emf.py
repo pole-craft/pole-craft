@@ -23,38 +23,17 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING, Mapping
 
 import numpy as np
-from numpy.typing import ArrayLike, NDArray
+from numpy.typing import NDArray
 
 from polecraft.core.motion import RotorRun, solve_angles
 from polecraft.core.post import flux_linkage
 from polecraft.core.problem import build_problem
+from polecraft.studies._cycle import derivative, fundamental
 
 if TYPE_CHECKING:
     from polecraft.core.materials import Material
     from polecraft.core.mesh import Mesh
     from polecraft.machines.base import Machine
-
-
-def _derivative(values: ArrayLike, period: float) -> NDArray[np.float64]:
-    """Rate of change of samples taken evenly over one period of a periodic function.
-
-    Each harmonic n of the samples is turned into its derivative, i n (2 pi /
-    period) times itself. With an even number of samples the highest
-    harmonic, at exactly half the sampling rate, has no known slope and is
-    left out.
-    """
-    values = np.asarray(values, dtype=float)
-    count = len(values)
-    waves = np.fft.rfft(values)
-    factor = 1j * np.arange(len(waves)) * (2.0 * math.pi / period)
-    if count % 2 == 0:
-        factor[-1] = 0.0
-    return np.fft.irfft(waves * factor, count)
-
-
-def _fundamental(values: NDArray[np.float64], cycles: int) -> float:
-    """Peak amplitude of the fundamental of samples over whole cycles."""
-    return float(abs(np.fft.rfft(values)[cycles]) / (len(values) / 2))
 
 
 @dataclass(frozen=True, eq=False)
@@ -82,7 +61,7 @@ class BackEmf:
     @property
     def amplitude(self) -> dict[str, float]:
         """Peak of the fundamental of each phase's back-EMF, in volts."""
-        return {phase: _fundamental(values, self.cycles) for phase, values in self.emf.items()}
+        return {phase: fundamental(values, self.cycles) for phase, values in self.emf.items()}
 
     @property
     def constant(self) -> float:
@@ -91,7 +70,7 @@ class BackEmf:
         The mean over the phases of pole pairs times the fundamental of the
         linkage, so it does not depend on the speed the study was run at.
         """
-        values = [_fundamental(linked, self.cycles) for linked in self.linkage.values()]
+        values = [fundamental(linked, self.cycles) for linked in self.linkage.values()]
         return self.pole_pairs * float(np.mean(values))
 
     def timing_report(self) -> str:
@@ -137,7 +116,7 @@ def back_emf(
     linked = [flux_linkage(step.problem, step.solution) for step in run.steps]
     linkage = {phase: np.array([values[phase] for values in linked]) for phase in linked[0]}
     emf = {
-        phase: speed * _derivative(values, cycle * cycles) for phase, values in linkage.items()
+        phase: speed * derivative(values, cycle * cycles) for phase, values in linkage.items()
     }
     return BackEmf(
         angles=angles,

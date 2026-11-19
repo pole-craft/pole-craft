@@ -7,8 +7,8 @@ be ahead of the latest release; it will grow with the package.
 What works today: a design file is loaded and checked, turned into geometry,
 meshed, and the magnetic field is solved with steel that saturates, at any
 rotor angle. Torque and the flux linked by each phase are read off the
-solved field; cogging torque and back-EMF are found over a cycle. What is
-not built yet: the efficiency map, losses, a full material library, and
+solved field; cogging torque, back-EMF and loaded torque are found over a
+cycle. What is not built yet: the efficiency map, losses, a full material library, and
 any machine other than the outer-rotor one. The command line solves
 at rotor angle 0 only.
 
@@ -125,9 +125,9 @@ maps a design file's `type` to a machine is in
 type is named.
 
 **`polecraft/studies/`** holds calculations over many solves: cogging
-torque (`polecraft/studies/cogging.py`) and back-EMF
-(`polecraft/studies/back_emf.py`). A study calls the solver and never names
-a machine type.
+torque (`polecraft/studies/cogging.py`), back-EMF
+(`polecraft/studies/back_emf.py`) and loaded torque
+(`polecraft/studies/loaded_torque.py`). A study calls the solver.
 
 Three rules keep these apart:
 

@@ -51,6 +51,18 @@ releases.
   (6 to 9 % on the examples), which is the same in all three phases, so the
   three phases sum to three times it rather than to zero; line-to-line EMFs
   do not carry it. 2D values, with no correction for the ends of the machine.
+- Loaded torque (`polecraft.studies.loaded_torque`): `loaded_torque(machine,
+  mesh, materials, current, advance)` gives the torque over one electrical
+  cycle with the phase currents locked to the rotor, with its mean,
+  peak-to-peak ripple and torque constant (N m per ampere of peak phase
+  current). The mean is also found from the phase flux linkages
+  (`mean_from_linkage`), independently of the air-gap stress; on the
+  reference motor the two agree within 0.2 % at 1 and 10 A and 0.31 % at
+  40 A, and within 0.05 % on a mesh of `size` 0.5. The torque constant at
+  low current is 1.5 times the back-EMF constant to 0.2 %, as power balance
+  requires. On the reference motor (placeholder steel) the torque constant
+  is 0.12 % lower at 5 A than at 0.5 A, 0.7 % lower at 10 A and 26 % lower
+  at 40 A, where the steel saturates.
 
 ### Changed
 

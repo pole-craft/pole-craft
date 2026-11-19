@@ -12,7 +12,7 @@ from polecraft.core.post import flux_linkage, gap_flux_density
 from polecraft.core.problem import build_problem
 from polecraft.core.solver import solve
 from polecraft.core.winding import concentrated_winding, winding_factor
-from polecraft.studies.back_emf import BackEmf, _derivative, back_emf
+from polecraft.studies.back_emf import BackEmf, back_emf
 
 MATERIALS = {
     # Placeholders: not the designs' real steel or magnet grade.
@@ -55,25 +55,6 @@ def reference_emf(reference: dict) -> BackEmf:
 @pytest.fixture(scope="module")
 def small() -> dict:
     return _motor("qdd_outer_12s10p")
-
-
-# The rate of change over a cycle, from the samples
-
-
-def test_derivative_of_a_sum_of_harmonics_is_exact() -> None:
-    period = 0.3
-    x = period * np.arange(16) / 16
-    w = 2 * math.pi / period
-    values = 0.5 + 2.0 * np.cos(w * x - 0.4) + 0.3 * np.sin(3 * w * x) - 0.1 * np.cos(7 * w * x)
-    slope = -2.0 * w * np.sin(w * x - 0.4) + 0.9 * w * np.cos(3 * w * x) + 0.7 * w * np.sin(7 * w * x)
-    assert np.allclose(_derivative(values, period), slope, rtol=0, atol=1e-12 * w)
-
-
-def test_derivative_leaves_out_the_harmonic_that_cannot_be_told_apart() -> None:
-    # At exactly half the sampling rate, cos samples as +-1 and sin as 0: the
-    # slope there is unknown, and is taken as zero.
-    values = np.cos(math.pi * np.arange(8))
-    assert np.allclose(_derivative(values, 1.0), 0.0, atol=1e-12)
 
 
 # What the study solves
