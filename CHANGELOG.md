@@ -22,6 +22,11 @@ releases.
   motor with the default mesh it is about 0.004 N m: 0.2 % of the torque at
   10 A, but about twice that motor's cogging torque, which the default mesh
   does not resolve at any angle (it needs `size` 0.5 or finer).
+- `solve_angles(mesh, angles, problem_at)` solves the field at a series of
+  rotor angles, each solve starting from the field at the angle before.
+  The results are those of separate solves; with saturating steel it takes
+  fewer Newton iterations (about 30 % fewer on the reference motor at 10 A).
+  `RotorRun.timing_report()` adds up the time over all angles.
 
 ### Changed
 

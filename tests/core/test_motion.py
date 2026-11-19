@@ -7,9 +7,9 @@ from pathlib import Path
 import numpy as np
 import pytest
 
-from polecraft.core.materials import AIR, LinearMaterial, Magnet, load_material
+from polecraft.core.materials import AIR, FrohlichSteel, LinearMaterial, Magnet, load_material
 from polecraft.core.mesh import BAND, Band, Mesh, join_band
-from polecraft.core.motion import band_steps, rotate, step_angle
+from polecraft.core.motion import band_steps, rotate, solve_angles, step_angle
 from polecraft.core.post import flux_linkage, torque
 from polecraft.core.problem import Gap, Problem, _directions, build_problem
 from polecraft.core.solver import shape_gradients, solve
@@ -117,7 +117,9 @@ def ring_machine(
     }
 
 
-def ring_problem(model: dict, mesh: Mesh, current: float = 4e6) -> Problem:
+def ring_problem(
+    model: dict, mesh: Mesh, current: float = 4e6, iron: object = LinearMaterial(1000.0)
+) -> Problem:
     """The field problem of the ring machine on its mesh, as turned."""
     band = mesh.band
     meshed = band.triangles
@@ -133,7 +135,7 @@ def ring_problem(model: dict, mesh: Mesh, current: float = 4e6) -> Problem:
     return Problem(
         nodes=mesh.nodes,
         triangles=mesh.triangles,
-        materials=(AIR, LinearMaterial(1000.0), Magnet(1.2)),
+        materials=(AIR, iron, Magnet(1.2)),
         triangle_material=np.where(kind == IRON, 1, np.where(kind == MAGNET, 2, 0)),
         current_density=np.where(in_coil, current * np.cos(p * angle), 0.0),
         remanence=np.where((kind == MAGNET)[:, None], 1.2 * polarity[:, None] * outward, 0.0),
@@ -852,3 +854,130 @@ def test_motor_linkage_changes_evenly_between_node_spacings(motor: dict) -> None
     # mesh noise, a few parts in ten thousand of the linkage.
     assert np.abs(linked).max() > 5e-3  # Wb
     assert np.abs(np.diff(linked, 3)).max() < 5e-4 * np.abs(linked).max()
+
+
+# Stepping through rotor angles, each solve started from the one before
+
+# Saturates in the ring machine's thin iron, so a solve takes several
+# Newton iterations and a good start shows.
+RING_STEEL = FrohlichSteel(saturation=1.6, half_field=500.0)
+
+
+def ring_run(model: dict, angles: np.ndarray, warm: bool):
+    return solve_angles(
+        model["mesh"],
+        angles,
+        lambda turned: ring_problem(model, turned, iron=RING_STEEL),
+        warm=warm,
+    )
+
+
+def ring_angles(model: dict) -> np.ndarray:
+    """Angles over two and a half slices, mostly between node spacings."""
+    return step_angle(model["mesh"]) * np.arange(0.0, 2.5 * model["mesh"].band.divisions, 4.3)
+
+
+@pytest.fixture(scope="module", params=["ring", "pole"])
+def runs(request: pytest.FixtureRequest) -> dict:
+    model = request.getfixturevalue(request.param)
+    angles = ring_angles(model)
+    return {
+        "model": model,
+        "angles": angles,
+        "warm": ring_run(model, angles, warm=True),
+        "cold": ring_run(model, angles, warm=False),
+    }
+
+
+def test_steps_are_at_the_angles_in_order(runs: dict) -> None:
+    run = runs["warm"]
+    assert len(run.steps) == len(runs["angles"])
+    assert np.array_equal(run.angles, runs["angles"])
+    for step, angle in zip(run.steps, runs["angles"]):
+        assert step.angle == angle
+        assert np.array_equal(step.problem.nodes, rotate(runs["model"]["mesh"], angle).nodes)
+
+
+def test_the_angles_cross_changes_in_the_number_of_copies(runs: dict) -> None:
+    counts = {len(step.problem.nodes) for step in runs["warm"].steps}
+    if runs["model"]["mesh"].band.full:
+        assert len(counts) == 1
+    else:
+        assert len(counts) > 1
+
+
+def test_warm_and_cold_starts_give_the_same_result(runs: dict) -> None:
+    for warm, cold in zip(runs["warm"].steps, runs["cold"].steps):
+        a, b = warm.solution.potential, cold.solution.potential
+        assert np.abs(a - b).max() < 1e-7 * np.abs(b).max()
+        assert torque(warm.problem, warm.solution) == pytest.approx(
+            torque(cold.problem, cold.solution), rel=1e-6
+        )
+        for phase, linked in flux_linkage(cold.problem, cold.solution).items():
+            assert flux_linkage(warm.problem, warm.solution)[phase] == pytest.approx(linked, rel=1e-6)
+
+
+def test_warm_starts_need_fewer_iterations(runs: dict) -> None:
+    warm, cold = runs["warm"].iterations, runs["cold"].iterations
+    assert min(cold) >= 4  # the steel does saturate
+    assert warm[0] == cold[0]  # the first angle has nothing to start from
+    assert all(w < c for w, c in zip(warm[1:], cold[1:]))
+    assert sum(warm) < 0.7 * sum(cold)
+
+
+def test_cold_steps_are_plain_solves(pole: dict) -> None:
+    angles = ring_angles(pole)[[0, 3, 7]]
+    run = ring_run(pole, angles, warm=False)
+    for step, angle in zip(run.steps, angles):
+        alone = solve(ring_problem(pole, rotate(pole["mesh"], angle), iron=RING_STEEL))
+        assert np.array_equal(step.solution.potential, alone.potential)
+
+
+@pytest.mark.parametrize("repeats", [0, 1, -3])
+def test_the_same_field_again_needs_no_iteration(pole: dict, repeats: int) -> None:
+    # Two slices turn this antiperiodic slice back onto the same field, so
+    # the start carried over must already be the answer, copies and all.
+    angle = 5.37 * step_angle(pole["mesh"])
+    later = angle + repeats * 2 * pole["mesh"].band.span
+    run = ring_run(pole, np.array([angle, later]), warm=True)
+    assert run.iterations[0] > 0
+    assert run.iterations[1] == 0
+
+
+def test_stepping_needs_angles_and_a_problem_on_the_turned_mesh(pole: dict, ring: dict) -> None:
+    with pytest.raises(ValueError, match="at least one rotor angle"):
+        ring_run(pole, np.array([]), warm=True)
+    with pytest.raises(ValueError, match="turned mesh"):
+        solve_angles(pole["mesh"], [0.1], lambda turned: ring_problem(ring, ring["mesh"]))
+
+
+def test_stepping_reports_its_timing(pole: dict) -> None:
+    run = ring_run(pole, ring_angles(pole)[:3], warm=True)
+    report = run.timing_report()
+    for stage in ("turn rotor", "build problem", "assemble", "linear solve", "total"):
+        assert stage in report
+    assert "3 rotor angles" in report
+    assert f"{sum(run.iterations)} Newton iterations" in report
+    assert "solver: superlu" in report
+    assert run.timings.total > 0.0
+
+
+def test_motor_warm_starts_give_the_same_torque_in_fewer_iterations(motor: dict) -> None:
+    spacing = step_angle(motor["mesh"])
+    angles = spacing * np.arange(0.0, 6.0, 1.3)
+    runs = {
+        warm: solve_angles(
+            motor["mesh"],
+            angles,
+            lambda turned: build_problem(motor["machine"], turned, motor["materials"], current=10.0),
+            warm=warm,
+        )
+        for warm in (True, False)
+    }
+    for warm, cold in zip(runs[True].steps, runs[False].steps):
+        assert torque(warm.problem, warm.solution) == pytest.approx(
+            torque(cold.problem, cold.solution), rel=1e-6
+        )
+    warm, cold = runs[True].iterations, runs[False].iterations
+    assert all(w < c for w, c in zip(warm[1:], cold[1:]))
+    assert sum(warm) < 0.8 * sum(cold)

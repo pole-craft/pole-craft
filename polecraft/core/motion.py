@@ -19,15 +19,24 @@ first, so the rotor slice never moves more than one slice from the stator
 slice, and each meshed node of the rotor keeps the potential it would have
 had without that. The potential at the meshed nodes, which come first, is
 then a fair first guess at the next angle; the copies of rotor nodes that
-follow them change in number with the angle.
+follow them change in number with the angle. ``solve_angles`` steps through
+a list of angles that way.
 """
 
 from __future__ import annotations
 
 import dataclasses
 import math
+import time
+from typing import Callable, Sequence
+
+import numpy as np
+from numpy.typing import ArrayLike, NDArray
 
 from polecraft.core.mesh import Mesh, join_band
+from polecraft.core.problem import Problem
+from polecraft.core.solver import Solution, solve
+from polecraft.timing import Timings
 
 
 def band_steps(mesh: Mesh, angle: float) -> tuple[int, float]:
@@ -95,3 +104,105 @@ def rotate(mesh: Mesh, angle: float) -> Mesh:
     """
     steps, turn = band_steps(mesh, angle)
     return dataclasses.replace(join_band(mesh, steps, turn), rotor_angle=float(angle))
+
+
+@dataclasses.dataclass(frozen=True, eq=False)
+class Step:
+    """The field at one rotor angle."""
+
+    angle: float  # rotor angle, mechanical radians
+    problem: Problem
+    solution: Solution
+
+
+@dataclasses.dataclass(frozen=True, eq=False)
+class RotorRun:
+    """The fields at a series of rotor angles, and the time they took."""
+
+    steps: tuple[Step, ...]
+    timings: Timings
+    solver: str
+
+    @property
+    def angles(self) -> NDArray[np.float64]:
+        """The rotor angles in mechanical radians, in the order solved."""
+        return np.array([step.angle for step in self.steps])
+
+    @property
+    def iterations(self) -> tuple[int, ...]:
+        """Newton iterations taken at each angle."""
+        return tuple(step.solution.iterations for step in self.steps)
+
+    def timing_report(self) -> str:
+        """Time spent in each part of the run, added over all angles, as text."""
+        heading = (
+            f"Timing (solver: {self.solver}, {len(self.steps)} rotor angles, "
+            f"{sum(self.iterations)} Newton iterations)"
+        )
+        return "\n".join([heading] + self.timings.report().splitlines()[1:])
+
+
+def _start_from(previous: Solution, mesh: Mesh) -> NDArray[np.float64]:
+    """A start for a solve on ``mesh`` from the solution at another angle.
+
+    The meshed nodes come first and keep their numbers at every angle, so
+    their potentials carry over. The copies after them differ in number;
+    they are left at zero, and the solver sets each from its original.
+    """
+    meshed = len(mesh.band.rest)
+    start = np.zeros(len(mesh.nodes))
+    start[:meshed] = previous.potential[:meshed]
+    return start
+
+
+def solve_angles(
+    mesh: Mesh,
+    angles: ArrayLike | Sequence[float],
+    problem_at: Callable[[Mesh], Problem],
+    warm: bool = True,
+    tolerance: float = 1e-10,
+    max_iterations: int = 30,
+    solver: str | None = None,
+) -> RotorRun:
+    """Solve the field at each of a series of rotor angles, in order.
+
+    ``angles`` are mechanical radians, as in ``rotate``. At each the mesh is
+    turned and ``problem_at`` is given the turned mesh and returns the
+    problem on it, for example
+    ``lambda turned: build_problem(machine, turned, materials, current)``,
+    which has the phase currents follow the rotor.
+
+    With ``warm`` each solve starts from the field at the angle before,
+    which saves Newton iterations when the steel saturates; the results are
+    the same as from a cold start (zero), to within the tolerance. Neighbouring
+    angles close together help most. ``tolerance``, ``max_iterations`` and
+    ``solver`` are passed to ``solve`` for every angle.
+
+    Raises ValueError if there are no angles, or if a problem is not on the
+    turned mesh; ConvergenceError from ``solve`` as there.
+    """
+    angles = np.asarray(angles, dtype=float).ravel()
+    if angles.size == 0:
+        raise ValueError("give at least one rotor angle")
+    timings = Timings()
+    steps: list[Step] = []
+    for angle in angles:
+        started = time.perf_counter()
+        turned = rotate(mesh, float(angle))
+        built = time.perf_counter()
+        problem = problem_at(turned)
+        timings.add("turn rotor", built - started)
+        timings.add("build problem", time.perf_counter() - built)
+        if len(problem.nodes) != len(turned.nodes):
+            raise ValueError(
+                f"the problem at {angle} rad has {len(problem.nodes)} nodes, "
+                f"the turned mesh {len(turned.nodes)}: build it on the turned mesh"
+            )
+        start = _start_from(steps[-1].solution, turned) if warm and steps else None
+        solution = solve(
+            problem, start, tolerance=tolerance, max_iterations=max_iterations, solver=solver
+        )
+        for name, seconds in solution.timings.stages:
+            timings.add(name, seconds)
+        steps.append(Step(float(angle), problem, solution))
+    return RotorRun(steps=tuple(steps), timings=timings, solver=steps[-1].solution.solver)

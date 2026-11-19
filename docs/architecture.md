@@ -87,8 +87,8 @@ works with regions, materials, coils and magnets only.
 - `polecraft/core/mesh.py`: the mesher. It is the only module that uses
   Gmsh, and it imports Gmsh only when a mesh is asked for. The thin band of
   air between stator and rotor is built here, not by Gmsh.
-- `polecraft/core/motion.py`: turning the rotor. Its nodes are moved and
-  only the band is joined again; nothing is meshed twice.
+- `polecraft/core/motion.py`: turning the rotor, joining only the band
+  again, and stepping through rotor angles with warm starts.
 - `polecraft/core/materials.py`: reluctivity against flux density, from a
   BH table or a formula, and magnets. Material files are in
   `polecraft/data/materials/`. The one there now is a placeholder made from
