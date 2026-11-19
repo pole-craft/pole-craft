@@ -41,6 +41,16 @@ releases.
   24-slot 28-pole example by 27 % from `size` 0.35 to 0.25; take such values
   as an order of magnitude. The 12-slot 10-pole example, with larger
   cogging, changes by about 3 % from `size` 0.5 to 0.35.
+- Back-EMF (`polecraft.studies.back_emf`): `back_emf(machine, mesh,
+  materials, speed)` gives the flux linked by each phase over whole
+  electrical cycles with no current, and the back-EMF of each phase at that
+  speed (rad/s), with its electrical frequency, fundamental peak and the
+  back-EMF constant in V s/rad. On the three example designs the fundamental
+  is within 2.4 % of the formula from the air-gap field and changes by
+  0.1 % from mesh `size` 1 to 0.5. The phase EMFs carry a third harmonic
+  (6 to 9 % on the examples), which is the same in all three phases, so the
+  three phases sum to three times it rather than to zero; line-to-line EMFs
+  do not carry it. 2D values, with no correction for the ends of the machine.
 
 ### Changed
 
