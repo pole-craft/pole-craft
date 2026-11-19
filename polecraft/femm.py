@@ -50,6 +50,7 @@ def femm_script(
     fineness: float = 1.0,
     gap_points: int = 3600,
     surround: float | None = None,
+    rotor_angles: Sequence[float] | None = None,
 ) -> str:
     """The text of a FEMM Lua script that solves a machine and writes results.
 
@@ -68,6 +69,12 @@ def femm_script(
     ``surround`` they are not: the bore is filled with air and air is added
     outside, out to ``surround`` times the outer radius, which shows what
     the solver's boundary leaves out.
+
+    ``rotor_angles`` gives the rotor angle of each case in radians,
+    counter-clockwise from the position the geometry is built in. Everything
+    on the rotor's side of the middle of the air gap is turned to it as one
+    group and FEMM meshes again; each magnet's direction is set afresh, turned
+    with the rotor. Without it every case is at angle 0.
     """
     if not math.isclose(geometry.span_angle, 2.0 * math.pi, rel_tol=1e-9):
         raise ValueError("the FEMM model needs the whole machine: build_geometry(full=True)")
@@ -79,6 +86,10 @@ def femm_script(
         raise ValueError(f"gap_points must be at least 8, not {gap_points}")
     if surround is not None and not surround > 1.0:
         raise ValueError(f"surround must be more than 1 (times the outer radius), not {surround}")
+    if rotor_angles is not None:
+        rotor_angles = [float(angle) for angle in rotor_angles]
+        if len(rotor_angles) != len(cases) or not all(map(math.isfinite, rotor_angles)):
+            raise ValueError("rotor_angles needs one finite angle in radians for each case")
     known = {"air": AIR, "copper": COPPER, **materials}
     phases = sorted({r.coil_side.phase for r in geometry.regions if r.coil_side is not None})
     for case in cases:
@@ -165,6 +176,7 @@ def femm_script(
             ]
         )
 
+    magnets = []  # rotor magnet labels, set again each time the rotor turns
     for region in geometry.regions:
         group = ROTOR_GROUP if region in geometry.rotor else STATOR_GROUP
         size = gap_size if region.kind == "air" else bulk_size
@@ -180,23 +192,53 @@ def femm_script(
                 )
             x, y = region.magnetisation.direction(*point)
             direction = math.degrees(math.atan2(y, x))
+            if group == ROTOR_GROUP:
+                magnets.append((point, region.material, size, direction))
         label(point, region.material, size, f'"{circuit}", {direction:.9f}, {group}, {turns}')
+    loose = []  # labels of no region (band, bore, outside air): in no group
+
+    def loose_label(point: tuple[float, float], material: str, size: float) -> None:
+        label(point, material, size, '"<None>", 0, 0, 0')
+        loose.append(f"{_mm(point[0])}, {_mm(point[1])}")
+
     middle_radius = 0.5 * (geometry.band_inner_radius + geometry.band_outer_radius)
     # Between two sample points, so that no point falls on a label.
-    label(
+    loose_label(
         (middle_radius * math.cos(math.pi / gap_points), middle_radius * math.sin(math.pi / gap_points)),
         "air",
         gap_size,
-        '"<None>", 0, 0, 0',
     )
     if surround is not None:
         outside = 0.5 * (geometry.outer_radius + far)
-        label((outside, 0.0), "air", 2.0 * bulk_size, '"<None>", 0, 0, 0')
+        loose_label((outside, 0.0), "air", 2.0 * bulk_size)
         if geometry.inner_radius > 0.0:
-            label((0.0, 0.0), "air", 2.0 * bulk_size, '"<None>", 0, 0, 0')
+            loose_label((0.0, 0.0), "air", 2.0 * bulk_size)
     elif geometry.inner_radius > 0.0:
         # The bore is outside the model, but FEMM wants every closed area named.
-        label((0.0, 0.0), "<No Mesh>", bulk_size, '"<None>", 0, 0, 0')
+        loose_label((0.0, 0.0), "<No Mesh>", bulk_size)
+
+    if rotor_angles is not None:
+        # The band keeps stator and rotor apart, so the circle through its
+        # middle has every rotor object on one side and every stator object
+        # on the other. Selecting inside it picks one of the two.
+        rotor_outside = any(
+            math.hypot(*inside_point(region)) > middle_radius for region in geometry.rotor
+        )
+        inner, outer = (STATOR_GROUP, ROTOR_GROUP) if rotor_outside else (ROTOR_GROUP, STATOR_GROUP)
+        everything = 2.0 * (far if surround is not None else geometry.outer_radius)
+        lines += [
+            f"mi_selectcircle(0, 0, {_mm(everything)}, 4)",
+            f"mi_setgroup({outer})",
+            "mi_clearselected()",
+            f"mi_selectcircle(0, 0, {_mm(middle_radius)}, 4)",
+            f"mi_setgroup({inner})",
+            "mi_clearselected()",
+        ]
+        # The band's label lies on that circle and may go either way; torque
+        # is taken over the rotor group, so it and the other labels of no
+        # region go back to no group, as they are when nothing turns.
+        for position in loose:
+            lines += [f"mi_selectlabel({position})", "mi_setgroup(0)", "mi_clearselected()"]
 
     angles = 2.0 * math.pi * np.arange(gap_points) / gap_points
     lines += [
@@ -206,8 +248,27 @@ def femm_script(
         f'out = openfile("{_lua_path(results)}", "w")',
         f'write(out, "radius_mm {_mm(middle_radius)}\\n")',
     ]
+    turned = 0.0
     for number, case in enumerate(cases):
         lines.append(f'write(out, "case {number}\\n")')
+        if rotor_angles is not None:
+            angle = rotor_angles[number]
+            if angle != turned:
+                lines += [
+                    f"mi_selectgroup({ROTOR_GROUP})",
+                    f"mi_moverotate(0, 0, {math.degrees(angle - turned)!r})",
+                    "mi_clearselected()",
+                ]
+                for point, material, size, direction in magnets:
+                    where = _on_arc(point, (0.0, 0.0), angle)
+                    lines += [
+                        f"mi_selectlabel({_mm(where[0])}, {_mm(where[1])})",
+                        f'mi_setblockprop("{material}", 0, {size * 1e3:.6f}, "<None>", '
+                        f"{direction + math.degrees(angle):.9f}, {ROTOR_GROUP}, 0)",
+                        "mi_clearselected()",
+                    ]
+                turned = angle
+            lines.append(f'write(out, "rotor_angle {angle!r}\\n")')
         for phase in phases:
             lines.append(f'mi_modifycircprop("{phase}", 1, {float(case[phase])!r})')
         lines += ["mi_analyze(1)", "mi_loadsolution()"]
@@ -238,7 +299,8 @@ def femm_script(
 def read_results(path: str | Path) -> list[dict]:
     """The results a FEMM script wrote, one dictionary for each case.
 
-    Each has ``torque`` (N m on the rotor, counter-clockwise positive),
+    Each has ``rotor_angle`` (radians; 0 if the script did not turn the
+    rotor), ``torque`` (N m on the rotor, counter-clockwise positive),
     ``current`` and ``flux_linkage`` (amperes and webers, by phase),
     ``nodes`` and ``elements`` of FEMM's mesh, ``radius`` (metres) and
     ``angles`` (radians) of the points in the air gap, and ``radial`` and
@@ -255,13 +317,15 @@ def read_results(path: str | Path) -> list[dict]:
         if key == "radius_mm":
             radius = float(row[1]) * 1e-3
         elif key == "case":
-            cases.append({"current": {}, "flux_linkage": {}, "b": []})
+            cases.append({"rotor_angle": 0.0, "current": {}, "flux_linkage": {}, "b": []})
         elif not cases:
             raise ValueError(f"{path}: '{key}' comes before any case")
         elif key in ("nodes", "elements"):
             cases[-1][key] = int(row[1])
         elif key == "torque":
             cases[-1]["torque"] = float(row[1])
+        elif key == "rotor_angle":
+            cases[-1]["rotor_angle"] = float(row[1])
         elif key == "circuit":
             cases[-1]["current"][row[1]] = float(row[2])
             cases[-1]["flux_linkage"][row[1]] = float(row[3])

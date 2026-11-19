@@ -585,6 +585,127 @@ def test_the_script_writes_what_the_reader_reads(script: str) -> None:
     assert written == {"radius_mm", "case", "nodes", "elements", "torque", "circuit", "b", "end"}
 
 
+# Turning the rotor
+
+TURNS = [0.0, 0.05, 0.05, 0.3, -0.2]
+
+
+@pytest.fixture(scope="module")
+def turning(geometry, materials, machine) -> str:
+    cases = [machine.excitation(angle, 0.0) for angle in TURNS]
+    return femm_script(geometry, materials, cases, "r.txt", gap_points=8, rotor_angles=TURNS)
+
+
+def per_case(script: str) -> list[str]:
+    """The script split at each case, first piece (the drawing) dropped."""
+    return re.split(r'write\(out, "case \d+\\n"\)\n', script)[1:]
+
+
+def test_without_rotor_angles_nothing_is_turned(script: str) -> None:
+    for name in ("mi_selectcircle", "mi_setgroup", "mi_selectgroup", "mi_moverotate"):
+        assert name not in script
+    assert "rotor_angle" not in script
+
+
+def test_everything_past_the_middle_of_the_gap_becomes_the_rotor_group(turning: str, geometry) -> None:
+    # Outer rotor: all of it first, then what lies inside the middle circle
+    # is given back to the stator.
+    middle = 0.5 * (geometry.band_inner_radius + geometry.band_outer_radius)
+    circles = calls(turning, "mi_selectcircle")
+    assert calls(turning, "mi_setgroup")[:2] == [[2.0], [1.0]]
+    assert circles[0][:2] == [0.0, 0.0] and circles[0][2] > geometry.outer_radius * 1e3
+    assert circles[1] == pytest.approx([0.0, 0.0, middle * 1e3, 4.0])
+    assert all(circle[3] == 4.0 for circle in circles)  # nodes, edges, arcs and labels
+    # Before the model is saved and solved.
+    assert turning.index("mi_setgroup") < turning.index("mi_saveas")
+
+
+@pytest.mark.parametrize("surround", [None, 1.5])
+def test_labels_of_no_region_stay_in_no_group_when_the_rotor_turns(
+    surround: float | None, geometry, materials, machine
+) -> None:
+    # The band's label lies on the dividing circle. In the rotor group it
+    # would add the band to the torque integral (8 mN m at angle 0 when it did).
+    cases = [machine.excitation(0.0, 0.0)] * 2
+    text = femm_script(
+        geometry, materials, cases, "r.txt", gap_points=8, surround=surround, rotor_angles=[0.0, 0.1]
+    )
+    regionless = [
+        (label["point"][0] * 1e3, label["point"][1] * 1e3)
+        for label in labels(text)[len(geometry.regions) :]
+    ]
+    assert len(regionless) == (3 if surround else 2)  # band, bore, and the air outside
+    drawing = text[: text.index("mi_saveas")]
+    resets = re.findall(r"mi_selectlabel\((.*), (.*)\)\nmi_setgroup\(0\)", drawing)
+    assert [(float(x), float(y)) for x, y in resets] == regionless
+    # After the circles that set the groups.
+    assert drawing.rindex("mi_selectcircle") < drawing.index("mi_setgroup(0)")
+    assert calls(drawing, "mi_setgroup") == [[2.0], [1.0]] + [[0.0]] * len(regionless)
+
+
+def test_each_case_turns_the_rotor_by_what_it_still_needs(turning: str) -> None:
+    turned, previous = 0.0, 0.0
+    for angle, text in zip(TURNS, per_case(turning)):
+        steps = calls(text, "mi_moverotate")
+        if angle == previous:
+            assert steps == []
+        else:
+            assert len(steps) == 1 and steps[0][:2] == [0.0, 0.0]
+            turned += math.radians(steps[0][2])
+            assert calls(text, "mi_selectgroup") == [[2.0]]
+        assert turned == pytest.approx(angle, abs=1e-12)
+        previous = angle
+        assert f'"rotor_angle {angle!r}\\n"' in text
+        # The rotor is turned before the case is solved.
+        if steps:
+            assert text.index("mi_moverotate") < text.index("mi_analyze")
+
+
+def test_magnets_are_turned_with_the_rotor(turning: str, geometry) -> None:
+    magnets = [r for r in geometry.rotor if r.magnetisation is not None]
+    first = {
+        label["point"]: label["direction"]
+        for label in labels(turning)[: len(geometry.regions)]
+        if label["material"] == "N42SH"
+    }
+    pieces = per_case(turning)
+    assert len(pieces) == len(TURNS)
+    for angle, text in zip(TURNS[1:], pieces[1:]):
+        picked = calls(text, "mi_selectlabel")
+        props = calls(text, "mi_setblockprop")
+        if "mi_moverotate" not in text:
+            assert picked == [] and props == []  # the same angle again: nothing to do
+            continue
+        assert len(picked) == len(props) == len(magnets) == 42
+        # Picked where the labels are after the turn, and before the solve.
+        assert text.index("mi_moverotate") < text.index("mi_selectlabel") < text.index("mi_analyze")
+        c, s = math.cos(angle), math.sin(angle)
+        for (x, y), row in zip(picked, props):
+            # Back to where the label was drawn, and its direction then.
+            px, py = (c * x + s * y) * 1e-3, (-s * x + c * y) * 1e-3
+            match = min(first, key=lambda p: math.dist(p, (px, py)))
+            assert math.dist(match, (px, py)) < 1e-9
+            assert row[0] == "N42SH" and row[3] == "<None>" and row[5:] == [2.0, 0.0]
+            assert row[4] == pytest.approx(first[match] + math.degrees(angle), abs=1e-6)
+
+
+def test_rotor_angles_must_match_the_cases(geometry, materials, cases) -> None:
+    for angles in ([0.0], [0.0, 0.1, 0.2], [0.0, math.nan]):
+        with pytest.raises(ValueError, match="rotor_angles"):
+            femm_script(geometry, materials, cases, "r.txt", gap_points=8, rotor_angles=angles)
+
+
+def test_the_turned_script_writes_what_the_reader_reads(turning: str, tmp_path: Path) -> None:
+    written = set(re.findall(r'write\(out, (?:format\()?"(\w+)', turning))
+    assert written == {
+        "radius_mm", "case", "rotor_angle", "nodes", "elements", "torque", "circuit", "b", "end"
+    }
+    path = tmp_path / "results.txt"
+    path.write_text(RESULTS.replace("case 1\n", "case 1\nrotor_angle 0.25\n"), encoding="utf-8")
+    first, second = read_results(path)
+    assert first["rotor_angle"] == 0.0 and second["rotor_angle"] == 0.25
+
+
 # A point inside a region
 
 

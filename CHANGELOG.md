@@ -63,6 +63,18 @@ releases.
   requires. On the reference motor (placeholder steel) the torque constant
   is 0.12 % lower at 5 A than at 0.5 A, 0.7 % lower at 10 A and 26 % lower
   at 40 A, where the steel saturates.
+- `femm_script(..., rotor_angles=...)` turns the rotor of the FEMM model for
+  each case. Cogging and back-EMF waveforms are now checked against FEMM,
+  from stored results made by `tests/data/femm/make_waveforms.py`. On the
+  36-slot 42-pole reference motor the back-EMF fundamental agrees within
+  0.14 %, its third harmonic within 0.2 % and the waveform point by point
+  within 0.2 % of its peak. On the 12-slot 10-pole example the cogging
+  torque's fundamental agrees within 3 % and its timing within 0.2 degrees
+  (mesh `size` 0.35). The reference motor's much smaller cogging torque,
+  about 2 mN m, agrees with FEMM's fine mesh in timing within 1 degree, and
+  in size within 6 % at `size` 0.35, 16 % at 0.25 and 28 % at 0.5: it is
+  hard to resolve in either program, and FEMM's own normal mesh puts it
+  41 % higher than its fine one.
 
 ### Changed
 
