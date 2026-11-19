@@ -27,6 +27,20 @@ releases.
   The results are those of separate solves; with saturating steel it takes
   fewer Newton iterations (about 30 % fewer on the reference motor at 10 A).
   `RotorRun.timing_report()` adds up the time over all angles.
+- Cogging torque (`polecraft.studies.cogging`): `cogging_torque(machine,
+  mesh, materials)` gives the torque with no current over one or more
+  cogging periods of 360 / LCM(slots, poles) mechanical degrees, and
+  `cogging_period(slots, poles)` the period itself. A mesh with fewer than
+  10 node spacings around the air gap in a period is warned about: the
+  waveform is then mostly mesh noise (the default mesh of the 36-slot
+  42-pole reference motor has 4; `size` 0.5 gives 10). Known limit: where
+  cogging torque is about a thousandth of the rated torque or less, its
+  period and mean come out right but its size does not settle with a finer
+  mesh. On the reference motor (about 2 mN m against 3.19 N m at 10 A) it
+  moved between 1.8 and 2.4 mN m over `size` 0.5 to 0.2, and on the
+  24-slot 28-pole example by 27 % from `size` 0.35 to 0.25; take such values
+  as an order of magnitude. The 12-slot 10-pole example, with larger
+  cogging, changes by about 3 % from `size` 0.5 to 0.35.
 
 ### Changed
 
