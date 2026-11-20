@@ -5,7 +5,16 @@ numbers follow [semantic versioning](https://semver.org); while the version
 is 0.0.x the design-file format and the Python interface may change between
 releases.
 
-## [Unreleased]
+## [0.0.3] - 2026-11-20
+
+The first release with a moving rotor. It turns the rotor of an outer-rotor
+surface-magnet motor without meshing again, and works out over a cycle of
+rotor angle the cogging torque, the back-EMF, and the torque with the phase
+currents following the rotor, with its ripple and torque constant. Checked
+against FEMM on the example motors: back-EMF within 0.14 %, and the cogging
+torque of the 12-slot 10-pole example within 3 %. There is still no real
+material data, so the numbers show how the tool behaves, not how a motor
+performs.
 
 ### Added
 
@@ -19,9 +28,8 @@ releases.
   At whole multiples of it no triangle changes shape. Between them the
   rotor's air next to the band leans by up to half a spacing, which adds
   mesh noise to the torque that falls with a finer mesh. On the reference
-  motor with the default mesh it is about 0.004 N m: 0.2 % of the torque at
-  10 A, but about twice that motor's cogging torque, which the default mesh
-  does not resolve at any angle (it needs `size` 0.5 or finer).
+  motor with the default mesh it is about 0.004 N m: 0.1 % of the torque at
+  10 A, but about twice that motor's cogging torque.
 - `solve_angles(mesh, angles, problem_at)` solves the field at a series of
   rotor angles, each solve starting from the field at the angle before.
   The results are those of separate solves; with saturating steel it takes
@@ -33,14 +41,7 @@ releases.
   `cogging_period(slots, poles)` the period itself. A mesh with fewer than
   10 node spacings around the air gap in a period is warned about: the
   waveform is then mostly mesh noise (the default mesh of the 36-slot
-  42-pole reference motor has 4; `size` 0.5 gives 10). Known limit: where
-  cogging torque is about a thousandth of the rated torque or less, its
-  period and mean come out right but its size does not settle with a finer
-  mesh. On the reference motor (about 2 mN m against 3.19 N m at 10 A) it
-  moved between 1.8 and 2.4 mN m over `size` 0.5 to 0.2, and on the
-  24-slot 28-pole example by 27 % from `size` 0.35 to 0.25; take such values
-  as an order of magnitude. The 12-slot 10-pole example, with larger
-  cogging, changes by about 3 % from `size` 0.5 to 0.35.
+  42-pole reference motor has 4; `size` 0.5 gives 10).
 - Back-EMF (`polecraft.studies.back_emf`): `back_emf(machine, mesh,
   materials, speed)` gives the flux linked by each phase over whole
   electrical cycles with no current, and the back-EMF of each phase at that
@@ -50,7 +51,7 @@ releases.
   0.1 % from mesh `size` 1 to 0.5. The phase EMFs carry a third harmonic
   (6 to 9 % on the examples), which is the same in all three phases, so the
   three phases sum to three times it rather than to zero; line-to-line EMFs
-  do not carry it. 2D values, with no correction for the ends of the machine.
+  do not carry it.
 - Loaded torque (`polecraft.studies.loaded_torque`): `loaded_torque(machine,
   mesh, materials, current, advance)` gives the torque over one electrical
   cycle with the phase currents locked to the rotor, with its mean,
@@ -64,17 +65,20 @@ releases.
   is 0.12 % lower at 5 A than at 0.5 A, 0.7 % lower at 10 A and 26 % lower
   at 40 A, where the steel saturates.
 - `femm_script(..., rotor_angles=...)` turns the rotor of the FEMM model for
-  each case. Cogging and back-EMF waveforms are now checked against FEMM,
-  from stored results made by `tests/data/femm/make_waveforms.py`. On the
-  36-slot 42-pole reference motor the back-EMF fundamental agrees within
-  0.14 %, its third harmonic within 0.2 % and the waveform point by point
-  within 0.2 % of its peak. On the 12-slot 10-pole example the cogging
-  torque's fundamental agrees within 3 % and its timing within 0.2 degrees
-  (mesh `size` 0.35). The reference motor's much smaller cogging torque,
-  about 2 mN m, agrees with FEMM's fine mesh in timing within 1 degree, and
-  in size within 6 % at `size` 0.35, 16 % at 0.25 and 28 % at 0.5: it is
-  hard to resolve in either program, and FEMM's own normal mesh puts it
-  41 % higher than its fine one.
+  each case. Cogging and back-EMF waveforms are checked against FEMM from
+  stored results, made by `tests/data/femm/make_waveforms.py`, so the tests
+  need no FEMM. On the 36-slot 42-pole reference motor the back-EMF
+  fundamental agrees within 0.14 %, its third harmonic within 0.2 % and the
+  waveform point by point within 0.2 % of its peak. On the 12-slot 10-pole
+  example the cogging torque's fundamental agrees within 3 % and its timing
+  within 0.2 degrees (mesh `size` 0.35). The reference motor's much smaller
+  cogging torque, about 2 mN m, agrees with FEMM's fine mesh in timing
+  within 1 degree, but in size it is 28 % above at `size` 0.5, 5.6 % above at
+  0.35, 16 % above at 0.25 and 1.9 % below at 0.2: it does not settle; see
+  the known limits.
+- An example script, `examples/motor_over_a_cycle.py`: cogging torque,
+  back-EMF and loaded torque of the 12-slot 10-pole example motor over a
+  cycle, with the torque constant checked against the back-EMF constant.
 
 ### Changed
 
@@ -85,8 +89,65 @@ releases.
   odd number, which some slot and pole counts gave (a slice of 9 slots,
   for one), the torque of the slice was off by up to about 1 %. The
   example designs were not affected.
-- Field pictures: region outlines are drawn as built, at rotor angle 0,
-  and do not follow a turned rotor yet.
+
+### Known limits
+
+- The studies are run from Python (see the example script). `polecraft
+  solve` still solves at rotor angle 0 only, and the outlines in field
+  pictures are drawn at rotor angle 0, so they do not follow a turned rotor.
+- No real material data. The steel curve is a placeholder worked out from a
+  formula, `polecraft solve` and the example scripts use a stand-in magnet,
+  and the material names in a design file are still not checked against a
+  material library. Do not use the results to judge a motor.
+- Cogging torque is hard to resolve. It needs a mesh with at least 10 node
+  spacings around the air gap in a period, which the default mesh gives
+  only on some designs (the reference motor's `size` 0.5 does; its default
+  does not, and a warning says so). Where cogging torque is about a
+  thousandth of the rated torque, as on the reference motor (about 2 mN m
+  against 3.19 N m at 10 A), its period and mean come out right but its size
+  does not settle with a finer mesh: 1.8 to 2.4 mN m over `size` 0.5 to
+  0.2, and 27 % between `size` 0.35 and 0.25 on the 24-slot 28-pole
+  example. Take such values as an order of magnitude. The 12-slot 10-pole
+  example, with larger cogging, changes by about 3 % from `size` 0.5 to
+  0.35. FEMM has the same difficulty: its normal mesh puts the reference
+  motor's cogging 41 % above its fine one.
+- The waveform comparison with FEMM covers the 36-slot 42-pole and 12-slot
+  10-pole examples with the same placeholder materials in both programs; the
+  24-slot 28-pole example is not compared. The loaded torque over a cycle,
+  its ripple and torque constant are not compared with FEMM either; they
+  are checked against the back-EMF constant and a second way of working
+  out the mean torque. It checks the 2D solver and the studies, not the
+  motor.
+- Two-dimensional only: no end effects, which matter in short, wide motors,
+  and no end windings, skew, losses or efficiency. Back-EMF, torque and
+  ripple are 2D values times the stack length.
+- Torque and flux linkage for the whole machine are worked out from the
+  repeating slice, which assumes the slices are identical.
+- Outer-rotor surface-magnet motors only, with parallel-sided teeth. The
+  FEMM model is written for parallel magnetisation only, and the checks
+  against FEMM are for that.
+- There is no air region outside the rotor yoke or inside the stator bore.
+  In FEMM, on the reference motor at 10 A and 40 A, adding air inside the
+  bore and out to 1.5 times the outer radius changed the torque by under
+  0.02 %. This was not checked with Pole-Craft's own solver.
+- Winding, lengthwise and temperature values are read but not used yet: for
+  example, nothing checks that the turns fit in the slot.
+- The mesh-refinement check and the static FEMM comparison cover the default
+  mesh of the reference motor only. Coarser meshes are accepted without a
+  warning and give a different torque: on the reference motor at 10 A,
+  `--size 5` changed it by about 1 % and `--size 6` to `--size 8` by about
+  4 % to 5 %. `polecraft solve` refuses only a mesh so coarse that the
+  regions no longer have the areas of the design, and that point depends on
+  the design (`--size 10` on the reference motor). Use the default size, or
+  check with a finer mesh. The air-gap band is one layer of triangles, so
+  very fine meshes (`--size` below about 0.5) and slot and pole counts with
+  little in common give thin triangles there.
+- Solving needs the optional Gmsh package (`pip install "polecraft[mesh]"`).
+  The faster PARDISO solver is optional too and exists for Windows and
+  Linux on Intel and AMD processors only.
+- Pictures of the field are saved files; there is no window to click in.
+- Pictures of very fine meshes look dark, because the triangle edge lines do
+  not thin out. Meshing cannot be interrupted part-way.
 
 ## [0.0.2] - 2026-11-18
 
@@ -262,5 +323,6 @@ does not report torque, back-EMF or losses.
 - Meshing cannot be interrupted part-way; Ctrl-C takes effect when the mesher
   returns.
 
+[0.0.3]: https://github.com/pole-craft/pole-craft/releases/tag/v0.0.3
 [0.0.2]: https://github.com/pole-craft/pole-craft/releases/tag/v0.0.2
 [0.0.1]: https://github.com/pole-craft/pole-craft/releases/tag/v0.0.1

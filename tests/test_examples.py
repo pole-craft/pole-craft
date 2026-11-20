@@ -16,6 +16,7 @@ EXAMPLES = {
     "inductance_of_a_coil.py": False,
     "material_models.py": False,
     "mesh_a_design.py": True,
+    "motor_over_a_cycle.py": True,
     "picture_of_the_field.py": True,
     "slice_against_whole_machine.py": True,
     "solve_a_motor.py": True,
@@ -265,6 +266,55 @@ def test_torque_against_current_example(needs_gmsh: None, repo_root: Path, tmp_p
     # than the first, which starts from nothing.
     iterations = [row[-1] for row in rows]
     assert iterations[1] < iterations[0]
+    assert list(tmp_path.iterdir()) == []
+
+
+def test_motor_over_a_cycle_example(needs_gmsh: None, repo_root: Path, tmp_path: Path) -> None:
+    done = run_example(repo_root, "motor_over_a_cycle.py", tmp_path)
+    assert done.returncode == 0, done.stderr
+    assert done.stderr == ""  # the default mesh of this design is fine enough for its cogging
+    lines = done.stdout.splitlines()
+    assert lines[0] == "12 slots, 10 poles, placeholder steel and magnet"
+    assert "One period is 6.0 degrees" in lines[2] and "360 / LCM(12, 10)" in lines[2]
+
+    # Cogging: twelve angles over the period, a clean wave that averages to zero.
+    rows = [numbers(line) for line in lines[5:17]]
+    assert [row[0] for row in rows] == [0.5 * k for k in range(12)]
+    cogging = [row[1] for row in rows]
+    spread = max(cogging) - min(cogging)
+    assert 5.0 < spread < 15.0  # mN m
+    assert abs(sum(cogging) / 12) < 0.05 * spread
+    # One wave a period: half a period on, the torque is the opposite (0.5 mN m off at most here).
+    for k in range(6):
+        assert cogging[k + 6] == pytest.approx(-cogging[k], abs=0.15 * spread)
+    assert cogging[3] < 0.0 < cogging[9]  # the sign of the torque at 1.5 and at 4.5 degrees
+    assert numbers(lines[17])[0] == pytest.approx(spread, abs=0.02)
+
+    # Back-EMF: twelve angles over the electrical cycle, 30 electrical degrees
+    # apart, so each phase is the one before shifted by four rows.
+    at = lines.index(next(line for line in lines if line.startswith("Back-EMF at 1000 rpm")))
+    assert "72 degrees of rotor angle" in lines[at]
+    table = [numbers(line) for line in lines[at + 3 : at + 15]]
+    assert [row[0] for row in table] == [6.0 * k for k in range(12)]
+    a, b, c = ([row[phase] for row in table] for phase in (1, 2, 3))
+    assert a[0] < 0.0 < b[0] and c[0] < 0.0  # phase B is at its positive peak at angle 0
+    for k in range(12):
+        assert b[k] == pytest.approx(a[(k + 8) % 12], abs=0.01)
+        assert c[k] == pytest.approx(a[(k + 4) % 12], abs=0.01)
+    voltage, frequency, constant = numbers(lines[at + 15])
+    assert frequency == pytest.approx(5 * 1000 / 60, abs=0.05)  # pole pairs times turns per second
+    assert 3.0 < voltage < 3.7
+    assert voltage == pytest.approx(constant * 1000 * 3.141592653589793 / 30, abs=0.005)
+    assert 5.0 < numbers(lines[at + 16])[0] < 15.0  # percent
+
+    # Loaded torque: the torque constant is 1.5 times the back-EMF constant.
+    at = lines.index(next(line for line in lines if line.startswith("Torque with 5 A peak")))
+    mean, ripple = numbers(lines[at + 1])
+    assert 0.2 < mean < 0.28 and 0.3 < ripple < 2.5
+    per_ampere, _, by_power_balance = numbers(lines[at + 2])
+    assert per_ampere == pytest.approx(by_power_balance, rel=0.01)
+    assert per_ampere == pytest.approx(constant * 1.5, rel=0.01)
+    assert numbers(lines[at + 3])[0] == pytest.approx(mean, rel=0.01)  # the other method
     assert list(tmp_path.iterdir()) == []
 
 

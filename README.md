@@ -4,7 +4,7 @@
 
 Open-source design and simulation tool for quasi-direct-drive (QDD) motors.
 
-> **Status: early development (version 0.0.2).** What 0.0.2 can do: load a motor design file and check it, work out the winding layout and the slice of the motor that repeats, build the cross-section of an outer-rotor surface-magnet motor, mesh it, solve its 2D magnetic field at one rotor position with saturating steel and permanent magnets, report the torque and the flux linked by each phase, and draw the field, from the `polecraft mesh` and `polecraft solve` commands or from Python. On the reference motor the solver agrees with FEMM within 0.3 % on torque. What it cannot do yet: **it has no real material data**, so its steel and magnet are stand-ins and its numbers show how the tool behaves, not how a motor performs. It solves one rotor position only, so there is no cogging torque, back-EMF over a cycle, ripple, losses or efficiency; it is 2D, without end effects; and inner-rotor motors are not supported. The roadmap below shows what comes next.
+> **Status: early development (version 0.0.3).** What 0.0.3 can do: load a motor design file and check it, work out the winding layout and the slice of the motor that repeats, build the cross-section of an outer-rotor surface-magnet motor, mesh it, turn its rotor without meshing again, solve its 2D magnetic field at any rotor position with saturating steel and permanent magnets, and draw the field. From the solved fields it reports the torque and the flux linked by each phase, and, over a cycle of rotor angle, the cogging torque, the back-EMF, and the torque with the currents following the rotor, with its ripple and torque constant. The `polecraft mesh` and `polecraft solve` commands do the first steps (`polecraft solve` at one rotor position); the studies are run from Python, as in [examples/motor_over_a_cycle.py](https://github.com/pole-craft/pole-craft/blob/main/examples/motor_over_a_cycle.py). Checked against FEMM on the reference motor: torque within 0.3 %, back-EMF within 0.14 %; the cogging torque of the 12-slot, 10-pole example within 3 %. What it cannot do yet: **it has no real material data**, so its steel and magnet are stand-ins and its numbers show how the tool behaves, not how a motor performs. The cogging torque of the 36-slot, 42-pole reference motor is about a thousandth of its torque and does not settle as the mesh is refined, so take it as an order of magnitude. There are no losses or efficiency map; it is 2D, without end effects; and inner-rotor motors are not supported. The roadmap below shows what comes next.
 
 ![Mesh of the repeating slice of a 36-slot, 42-pole outer-rotor motor](https://raw.githubusercontent.com/pole-craft/pole-craft/main/docs/images/mesh_36s42p.png)
 
@@ -92,11 +92,11 @@ print(len(mesh.nodes), len(mesh.triangles))
 plot_mesh(mesh, geometry, "motor.png")
 ```
 
-A longer example that also prints the winding layout is in [examples/mesh_a_design.py](https://github.com/pole-craft/pole-craft/blob/main/examples/mesh_a_design.py). The Python interface may change between 0.0.x versions.
+A longer example that also prints the winding layout is in [examples/mesh_a_design.py](https://github.com/pole-craft/pole-craft/blob/main/examples/mesh_a_design.py). The studies (cogging torque, back-EMF, loaded torque) are run from Python too: see [examples/motor_over_a_cycle.py](https://github.com/pole-craft/pole-craft/blob/main/examples/motor_over_a_cycle.py). The Python interface may change between 0.0.x versions.
 
 ## Examples
 
-Scripts in the [examples folder](https://github.com/pole-craft/pole-craft/tree/main/examples) of the repository, each run with `python examples/<name>`. They need version 0.0.2 or newer, which has the field solver.
+Scripts in the [examples folder](https://github.com/pole-craft/pole-craft/tree/main/examples) of the repository, each run with `python examples/<name>`. They need version 0.0.2 or newer, which has the field solver; motor_over_a_cycle.py needs 0.0.3 or newer.
 
 | Example | What it shows | Needs Gmsh |
 |---|---|---|
@@ -105,6 +105,7 @@ Scripts in the [examples folder](https://github.com/pole-craft/pole-craft/tree/m
 | [material_models.py](https://github.com/pole-craft/pole-craft/blob/main/examples/material_models.py) | Air, a magnet and saturating steel as the solver sees them; the placeholder steel beside its formula | no |
 | [solve_a_motor.py](https://github.com/pole-craft/pole-craft/blob/main/examples/solve_a_motor.py) | Solve the field of a motor; torque, flux linkage, convergence and timing reports | yes |
 | [torque_against_current.py](https://github.com/pole-craft/pole-craft/blob/main/examples/torque_against_current.py) | Torque at several currents, showing the steel saturate | yes |
+| [motor_over_a_cycle.py](https://github.com/pole-craft/pole-craft/blob/main/examples/motor_over_a_cycle.py) | Cogging torque, back-EMF and loaded torque over a cycle of rotor angle, with the torque constant checked against the back-EMF constant | yes |
 | [slice_against_whole_machine.py](https://github.com/pole-craft/pole-craft/blob/main/examples/slice_against_whole_machine.py) | The repeating slice gives the whole machine's torque and flux linkage for a fraction of the work | yes |
 | [picture_of_the_field.py](https://github.com/pole-craft/pole-craft/blob/main/examples/picture_of_the_field.py) | Save a picture of flux density, field lines and region outlines | yes |
 | [choose_a_solver.py](https://github.com/pole-craft/pole-craft/blob/main/examples/choose_a_solver.py) | List the sparse solvers on your machine and time each | yes |
@@ -131,6 +132,17 @@ Results at one rotor position, Pole-Craft on its default mesh of the repeating s
 
 Over all three currents the two agree within 0.3 % on torque, on the flux linked by each phase within 0.7 % of the largest phase's, and within 0.3 % on the main wave of the flux density in the air gap. A phase whose linkage is near zero at that position differs by about 3 % of its own small value (3.2 % at 40 A). Making Pole-Craft's mesh twice as fine changes its torque by under 0.2 %, and FEMM's own answer moves by 0.1 % between its normal and its fine mesh.
 
+Rotation is checked the same way. FEMM solved the whole machine with no current at 12 to 24 rotor angles, turning the rotor and meshing again at each (the results are in [tests/data/femm/waveforms.json](https://github.com/pole-craft/pole-craft/blob/main/tests/data/femm/waveforms.json)), and the studies were run at the same angles on the repeating slice:
+
+| Quantity | Pole-Craft | FEMM | Difference |
+|---|---|---|---|
+| Back-EMF of the 36-slot, 42-pole motor, fundamental at 100 rad/s | 21.438 V | 21.409 V | 0.14 % |
+| Same, waveform over the cycle, largest difference | | | 0.2 % of the peak |
+| Cogging torque of the 12-slot, 10-pole motor, fundamental | 4.414 mN m | 4.285 mN m | 3.0 %, timing within 0.2 degrees |
+| Cogging torque of the 36-slot, 42-pole motor, fundamental | 1.81 to 2.36 mN m over four mesh sizes | 1.840 mN m | -2 % to +28 %, not converging; timing within 1 degree |
+
+Pole-Craft's cogging torque of the 12-slot, 10-pole motor is on a mesh of `size` 0.35, against FEMM's fine mesh. For the 36-slot, 42-pole motor, mesh sizes 0.5, 0.35, 0.25 and 0.2 give 2.36, 1.94, 2.14 and 1.81 mN m, which is 28 %, 5.6 % and 16 % above and 1.9 % below FEMM's fine-mesh 1.840 mN m: the result does not settle as the mesh is refined. That motor's cogging torque is about a thousandth of its 3.19 N m at 10 A and is hard to resolve in either program, as FEMM's normal mesh puts it 41 % above its fine one. Take it as an order of magnitude. The back-EMF, which is much larger, agrees closely, including the third harmonic that all three phases carry. The torque over a cycle with the currents following the rotor, its ripple and its torque constant are not compared with FEMM; they are checked against the back-EMF constant and against a second way of working out the mean torque.
+
 Time for the same job (mesh the motor and solve the three currents), measured once on one laptop:
 
 | Run | Nodes | Time |
@@ -142,13 +154,13 @@ Time for the same job (mesh the motor and solve the three currents), measured on
 
 Most of the gain comes from solving only the slice that repeats, on a mesh no finer than the answer needs; on the whole machine with a mesh of similar size Pole-Craft is still several times quicker. FEMM's times include starting the program and drawing the model.
 
-This is a check of the 2D solver only. Both programs use the same placeholder steel curve and stand-in magnet and solve the same 2D model, so it says nothing yet about how close either is to a real motor: end effects, which matter in short, wide motors, and real material data come later. FEMM does far more than this comparison uses, and it remains the reference Pole-Craft is checked against.
+This is a check of the 2D solver and the studies only. Both programs use the same placeholder steel curve and stand-in magnet and solve the same 2D model, so it says nothing yet about how close either is to a real motor: end effects, which matter in short, wide motors, and real material data come later. FEMM does far more than this comparison uses, and it remains the reference Pole-Craft is checked against.
 
 ## Roadmap
 
 - [x] Parametric geometry and meshing for QDD motors (outer rotor; inner rotor to follow)
-- [x] 2D field solver with saturated steel and permanent magnets (one rotor position)
-- [ ] Rotation: cogging torque, back-EMF, torque ripple
+- [x] 2D field solver with saturated steel and permanent magnets (any rotor position)
+- [x] Rotation: cogging torque, back-EMF, torque ripple
 - [ ] Material and winding library
 - [ ] Losses, torque-speed curve and efficiency map
 - [ ] Parallel and GPU-accelerated design sweeps
