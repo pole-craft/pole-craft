@@ -23,7 +23,7 @@ from polecraft.core.geometry import (
     closed_loop,
     ring_sector,
 )
-from polecraft.core.winding import Coil, concentrated_winding
+from polecraft.core.winding import Coil, CoilShape, concentrated_winding
 from polecraft.machines.base import Machine
 from polecraft.validation import Problem, Section
 
@@ -294,6 +294,22 @@ class QddOuter(Machine):
             span_angle=2 * math.pi if full else 2 * math.pi / repeat.periods,
             antiperiodic=repeat.antiperiodic and not full,
             stack_length=design.axial.stack_length_mm * MM,
+        )
+
+    def coil_shape(self) -> CoilShape:
+        """The coil on a parallel-sided tooth, filling half the slot on each side.
+
+        A coil side runs from the slot bottom to the slot top, so its mean
+        thickness across the slot is its area over that depth.
+        """
+        dims: QddOuterParameters = self.design.geometry
+        coil = concentrated_winding(self.design.slots, self.design.poles)[0]
+        side = next(r for r in self._tooth_unit(coil) if r.kind == "coil")
+        depth = dims.stator.slot_depth_mm * MM
+        return CoilShape(
+            tooth_width=dims.stator.tooth_width_mm * MM,
+            thickness=side.area() / depth,
+            side_area=side.area(),
         )
 
     def _tooth_unit(self, coil: Coil) -> list[Region]:

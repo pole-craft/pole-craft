@@ -82,9 +82,15 @@ def test_tooth_as_wide_as_the_slot_pitch_is_rejected(changed, problems_of) -> No
     limit = 2 * 16.5 * math.sin(math.pi / 12)
     assert limit == pytest.approx(8.541, abs=1e-3)
 
-    # Narrow the opening so it is not the first thing to fail.
+    # Narrow the opening so it is not the first thing to fail, and wind one
+    # thin turn so that the nearly closed slot can hold it.
     design_from_dict(
-        changed("geometry.stator.tooth_width_mm", 8.5, "geometry.stator.slot_opening_mm", 0.01)
+        changed(
+            "geometry.stator.tooth_width_mm", 8.5,
+            "geometry.stator.slot_opening_mm", 0.01,
+            "winding.turns_per_coil", 1,
+            "winding.parallel_strands", 1,
+        )
     )
     problems = problems_of(changed("geometry.stator.tooth_width_mm", 8.6))
     assert list(problems) == ["geometry.stator.tooth_width_mm"]
@@ -146,3 +152,16 @@ def test_suggested_taper_is_itself_accepted(changed, problems_of) -> None:
 
 def test_square_tip_is_always_accepted(changed) -> None:
     design_from_dict(changed("geometry.stator.tooth_tip_taper_mm", 0))
+
+
+def test_coil_shape_is_the_coil_region_of_the_geometry(valid_data) -> None:
+    from polecraft.machines import machine_for
+
+    machine = machine_for(design_from_dict(valid_data))
+    shape = machine.coil_shape()
+    coils = [r for r in machine.build_geometry().regions if r.kind == "coil"]
+    assert all(r.area() == pytest.approx(shape.side_area, rel=1e-12) for r in coils)
+    assert shape.tooth_width == pytest.approx(5.0e-3)
+    assert shape.thickness * 8.0e-3 == pytest.approx(shape.side_area, rel=1e-12)
+    # Two coil sides, the tooth and the slot air fill the slot pitch between the circles.
+    assert 0.0 < shape.thickness < 2 * math.pi * 24.5e-3 / 12

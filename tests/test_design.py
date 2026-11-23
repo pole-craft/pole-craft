@@ -546,3 +546,76 @@ def test_error_survives_pickling(changed) -> None:
     assert str(restored) == str(caught.value)
     assert restored.problems == caught.value.problems
     assert restored.source == "point 3"
+
+
+# Winding fit and warnings
+
+
+def test_valid_design_has_no_warnings(valid_data: dict) -> None:
+    assert design_from_dict(valid_data).warnings == ()
+
+
+def test_over_filled_slot_is_rejected(changed, problems_of) -> None:
+    # 70 turns x 2 strands of 0.45 mm overall in a 22.9 mm2 coil side: 97 %.
+    problems = problems_of(changed("winding.turns_per_coil", 70))
+    assert list(problems) == ["winding.turns_per_coil"]
+    assert "over-filled" in problems["winding.turns_per_coil"]
+    assert "90.7%" in problems["winding.turns_per_coil"]
+
+
+def test_insulation_can_decide_whether_the_wire_fits(changed, problems_of) -> None:
+    # 60 x 2 strands of 0.4 mm bare: 66 % of the coil side; at 0.5 mm overall, 103 %.
+    design = design_from_dict(
+        changed("winding.turns_per_coil", 60, "winding.insulated_diameter_mm", None)
+    )
+    assert design.winding.insulated_diameter_mm is None
+    problems = problems_of(changed("winding.insulated_diameter_mm", 0.5))
+    assert "insulated" in problems["winding.turns_per_coil"]
+
+
+def test_insulated_diameter_must_exceed_the_bare_one(changed, problems_of) -> None:
+    problems = problems_of(changed("winding.insulated_diameter_mm", 0.4))
+    assert list(problems) == ["winding.insulated_diameter_mm"]
+    assert "0.4" in problems["winding.insulated_diameter_mm"]
+
+
+def test_tight_fill_loads_with_a_warning_naming_the_field(changed) -> None:
+    # 42 turns x 2 strands of 0.4 mm: copper fill 0.46, packing 0.58.
+    design = design_from_dict(changed("winding.turns_per_coil", 42))
+    assert design.winding.turns_per_coil == 42
+    [warning] = design.warnings
+    assert warning.path == "winding.turns_per_coil"
+    assert "copper fill factor 0.46" in warning.message
+
+
+def test_warnings_do_not_change_what_the_design_is(valid_data: dict, changed) -> None:
+    plain = design_from_dict(copy.deepcopy(valid_data))
+    warned = design_from_dict(changed("steel.stacking_factor", 0.85))
+    assert warned.warnings
+    assert warned == dataclasses.replace(plain, steel=warned.steel)
+    assert "warnings" not in design_to_dict(warned)
+    assert design_from_dict(design_to_dict(warned)) == warned
+
+
+def test_low_stacking_factor_loads_with_a_warning(changed) -> None:
+    design = design_from_dict(changed("steel.stacking_factor", 0.85))
+    assert design.steel.stacking_factor == 0.85
+    assert [w.path for w in design.warnings] == ["steel.stacking_factor"]
+
+
+def test_errors_still_stop_loading_and_come_with_the_warnings(changed) -> None:
+    data = changed("steel.stacking_factor", 0.85, "axial.stack_length_mm", -1)
+    with pytest.raises(DesignError) as caught:
+        design_from_dict(data, source="motor.yaml")
+    error = caught.value
+    assert [p.path for p in error.problems] == ["axial.stack_length_mm"]
+    assert [w.path for w in error.warnings] == ["steel.stacking_factor"]
+    text = str(error)
+    assert "axial.stack_length_mm" in text and "warning: steel.stacking_factor" in text
+
+
+def test_winding_problem_comes_with_the_warnings(changed) -> None:
+    with pytest.raises(DesignError) as caught:
+        design_from_dict(changed("steel.stacking_factor", 0.85, "winding.turns_per_coil", 70))
+    assert [p.path for p in caught.value.problems] == ["winding.turns_per_coil"]
+    assert [w.path for w in caught.value.warnings] == ["steel.stacking_factor"]

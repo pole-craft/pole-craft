@@ -98,7 +98,7 @@ def test_every_core_and_machine_module_is_described(document: str, package_dir: 
 def test_the_machine_contract_in_the_document_is_the_real_one(document: str) -> None:
     section = document.split("## The machine contract")[1].split("\n## ")[0]
     methods = set(re.findall(r"`(\w+)\(", section))
-    assert methods == {"parameters", "build_geometry", "excitation", "symmetry"}
+    assert methods == {"parameters", "build_geometry", "excitation", "symmetry", "coil_shape"}
     for method in methods:
         assert callable(getattr(Machine, method))
 

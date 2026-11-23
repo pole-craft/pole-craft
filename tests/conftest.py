@@ -45,6 +45,7 @@ VALID_DESIGN: dict[str, Any] = {
     "magnet": {"material": "N35", "temperature_C": 60.0},
     "winding": {
         "wire_diameter_mm": 0.4,
+        "insulated_diameter_mm": 0.45,
         "turns_per_coil": 30,
         "parallel_strands": 2,
         "conductor": "copper",

@@ -10,10 +10,10 @@ from pathlib import Path
 from typing import Sequence
 
 from polecraft import __version__
-from polecraft.design import load_design
+from polecraft.design import Design, load_design
 from polecraft.machines import machine_for
 from polecraft.timing import Timings
-from polecraft.validation import DesignError
+from polecraft.validation import DesignError, warning_text
 
 # Added to the help of every command that meshes. Such a command also calls
 # require_gmsh() before anything else.
@@ -105,6 +105,7 @@ def _mesh(arguments: argparse.Namespace) -> int:
 
     with timings.stage("load design"):
         design = load_design(arguments.design)
+    _print_warnings(design, arguments.design)
     with timings.stage("geometry"):
         geometry = machine_for(design).build_geometry(full=arguments.full)
     with timings.stage("mesh"):
@@ -122,6 +123,12 @@ def _mesh(arguments: argparse.Namespace) -> int:
     print(f"  picture: {written}")
     print(timings.report())
     return 0
+
+
+def _print_warnings(design: Design, path: Path) -> None:
+    """Advice found in the design file; the command carries on."""
+    for warning in design.warnings:
+        print(warning_text(warning, str(path)), file=sys.stderr)
 
 
 def _solve(arguments: argparse.Namespace) -> int:
@@ -154,6 +161,7 @@ def _solve(arguments: argparse.Namespace) -> int:
 
     with timings.stage("load design"):
         design = load_design(arguments.design)
+    _print_warnings(design, arguments.design)
     steels = sorted({design.steel.stator, design.steel.rotor})
     if design.magnet.material in steels:
         raise ValueError(

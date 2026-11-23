@@ -84,9 +84,10 @@ works with regions, materials, coils and magnets only.
 
 - `polecraft/core/geometry.py`: regions and their outlines.
 - `polecraft/core/winding.py`: the repeating slice, the coil layout of a
-  tooth-wound three-phase winding, and its winding factor.
+  tooth-wound three-phase winding and its winding factor, and its slot
+  fill, turn length and resistance.
 - `polecraft/core/mesh.py`: the mesher. It is the only module that uses
-  Gmsh, and it imports Gmsh only when a mesh is asked for. The thin band of
+  Gmsh, imported only when a mesh is asked for. The thin band of
   air between stator and rotor is built here, not by Gmsh.
 - `polecraft/core/motion.py`: turning the rotor, joining only the band
   again, and stepping through rotor angles with warm starts.
@@ -104,9 +105,8 @@ works with regions, materials, coils and magnets only.
   sparse linear systems to it by the name of a solver, so that a faster one
   can be added in one place, and it builds the matrix without working out
   again which entries it has. The solution says how its time was spent.
-  The solver that comes with SciPy is the default. One solver, PARDISO, is
-  in an optional package and is used only when asked for by name; where
-  the package is missing the default is used instead.
+  The solver that comes with SciPy is the default. PARDISO, from an
+  optional package, is used only when named, else the default.
 - `polecraft/core/post.py`: results from a solved field. Torque comes from
   the Maxwell stress in the band of air between stator and rotor, and flux
   linkage from the potential over the coil sides. The flux density in the
@@ -140,7 +140,7 @@ Three rules keep these apart:
 ## The machine contract
 
 Every machine is a subclass of `Machine` in `polecraft/machines/base.py` and
-offers four things:
+offers five things:
 
 - `parameters()`: the dimensions that define the machine, as read from the
   design file.
@@ -151,6 +151,7 @@ offers four things:
   a current advance.
 - `symmetry()`: the smallest slice of the machine that repeats, and whether
   the next slice has the field reversed.
+- `coil_shape()`: the size of a tooth coil, for slot fill and resistance.
 
 The conventions that go with them (which tooth and which magnet sit on the
 x axis, which way positive current flows, which way a magnet with positive

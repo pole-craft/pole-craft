@@ -7,7 +7,7 @@ from abc import ABC, abstractmethod
 from typing import TYPE_CHECKING, ClassVar, Protocol
 
 from polecraft.core.geometry import Geometry
-from polecraft.core.winding import Symmetry, phase_axis_angle, symmetry
+from polecraft.core.winding import CoilShape, Symmetry, phase_axis_angle, symmetry
 from polecraft.validation import Problem, Section
 
 if TYPE_CHECKING:
@@ -56,6 +56,13 @@ class Machine(ABC):
         0, with magnet 0 centred on the x axis and magnetised away from the
         machine axis.
         """
+
+    def coil_shape(self) -> CoilShape:
+        """Size of the coil on one tooth, for slot fill, turn length and resistance.
+
+        A machine that does not provide it has its winding left unchecked.
+        """
+        raise NotImplementedError(f"{type(self).__name__} does not describe its coils")
 
     def excitation(self, angle: float, current: float, advance: float = 0.0) -> dict[str, float]:
         """Phase currents in amperes for a rotor position.

@@ -719,3 +719,19 @@ def test_command_is_declared_in_pyproject(repo_root: Path) -> None:
     assert project["project"]["scripts"] == {"polecraft": "polecraft.cli:main"}
     module, function = project["project"]["scripts"]["polecraft"].split(":")
     assert getattr(importlib.import_module(module), function) is main
+
+
+def test_mesh_command_prints_warnings_and_carries_on(
+    needs_gmsh: None, reference: Path, tmp_path: Path, capsys: pytest.CaptureFixture
+) -> None:
+    text = reference.read_text(encoding="utf-8").replace(
+        "stacking_factor: 0.95", "stacking_factor: 0.85"
+    )
+    design = tmp_path / "low_stacking.yaml"
+    design.write_text(text, encoding="utf-8")
+    assert main(["mesh", str(design), "-o", str(tmp_path / "motor.png"), "--size", "2"]) == 0
+    output = capsys.readouterr()
+    assert output.err.strip() == f"{design}: warning: steel.stacking_factor: " + (
+        "0.85 is low: laminated stacks are usually 0.92 to 0.98 steel; check the value"
+    )
+    assert "picture:" in output.out

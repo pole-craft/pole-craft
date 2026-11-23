@@ -5,7 +5,9 @@ import math
 import numpy as np
 import pytest
 
-from polecraft.validation import DesignError, Problem, Section
+import pickle
+
+from polecraft.validation import DesignError, Problem, Section, warning_text
 
 
 def read(data: dict) -> tuple[Section, list[Problem]]:
@@ -242,3 +244,52 @@ def test_error_lists_every_problem() -> None:
 def test_error_without_a_source() -> None:
     error = DesignError([Problem("slots", "required field is missing")])
     assert str(error) == "design: slots: required field is missing"
+
+
+# Warnings
+
+
+def test_warning_is_recorded_beside_problems_with_its_path() -> None:
+    problems: list[Problem] = []
+    warnings: list[Problem] = []
+    root = Section({"steel": {"x": 1}}, "", problems, warnings=warnings)
+    steel = root.section("steel")
+    steel.number("x")
+    steel.warn("x", "is unusual")
+    root.finish()
+    assert problems == []
+    assert warnings == [Problem("steel.x", "is unusual")]
+
+
+def test_section_has_its_own_warning_list_when_none_is_given() -> None:
+    section = Section({"x": 1}, "", [])
+    section.warn("x", "is unusual")
+    assert section.warnings == [Problem("x", "is unusual")]
+
+
+def test_error_lists_problems_and_warnings_together() -> None:
+    error = DesignError(
+        [Problem("a.b", "is wrong")], "motor.yaml", [Problem("c.d", "is unusual")]
+    )
+    assert str(error) == (
+        "motor.yaml: 1 problem, 1 warning\n  a.b: is wrong\n  warning: c.d: is unusual"
+    )
+    assert error.warnings == [Problem("c.d", "is unusual")]
+
+
+def test_error_without_warnings_reads_as_before() -> None:
+    assert str(DesignError([Problem("a", "is wrong")], "m.yaml")) == "m.yaml: a: is wrong"
+    assert DesignError([Problem("a", "x")]).warnings == []
+
+
+def test_error_keeps_its_warnings_through_pickling() -> None:
+    error = DesignError([Problem("a", "x")], "m.yaml", [Problem("b", "y")])
+    copy = pickle.loads(pickle.dumps(error))
+    assert copy.warnings == error.warnings and str(copy) == str(error)
+
+
+def test_warning_text_names_the_file_and_field() -> None:
+    assert warning_text(Problem("steel.x", "is unusual"), "m.yaml") == (
+        "m.yaml: warning: steel.x: is unusual"
+    )
+    assert warning_text(Problem("x", "y")) == "design: warning: x: y"

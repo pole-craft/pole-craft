@@ -4,6 +4,10 @@ Nothing here knows about motors. A ``Section`` wraps one block of the file
 (a mapping of field names to values) and hands out checked values. Problems
 are collected in a list instead of being raised one at a time, so a user sees
 everything that is wrong with a file in a single run.
+
+Warnings have the same form as problems (a field path and a message) but do
+not stop a design from loading: they are engineering advice, such as a slot
+that will be hard to wind.
 """
 
 from __future__ import annotations
@@ -29,24 +33,43 @@ class Problem:
         return f"{self.path}: {self.message}" if self.path else self.message
 
 
-class DesignError(ValueError):
-    """A design could not be loaded. ``problems`` lists every fault found."""
+def warning_text(warning: Problem, source: str | None = None) -> str:
+    """One warning as a line of text, in the form problems are reported in."""
+    return f"{source or 'design'}: warning: {warning}"
 
-    def __init__(self, problems: Iterable[Problem], source: str | None = None) -> None:
+
+class DesignError(ValueError):
+    """A design could not be loaded.
+
+    ``problems`` lists every fault found, and ``warnings`` the advice found
+    alongside them, so both are reported in one run.
+    """
+
+    def __init__(
+        self,
+        problems: Iterable[Problem],
+        source: str | None = None,
+        warnings: Iterable[Problem] = (),
+    ) -> None:
         self.problems: list[Problem] = list(problems)
         self.source = source
+        self.warnings: list[Problem] = list(warnings)
         super().__init__(self._format())
 
     def __reduce__(self) -> tuple:
         # Lets the error cross process boundaries intact (parallel sweeps).
-        return (type(self), (self.problems, self.source))
+        return (type(self), (self.problems, self.source, self.warnings))
 
     def _format(self) -> str:
         where = self.source or "design"
-        if len(self.problems) == 1:
+        if len(self.problems) == 1 and not self.warnings:
             return f"{where}: {self.problems[0]}"
-        lines = [f"{where}: {len(self.problems)} problems"]
+        count = f"{len(self.problems)} problem{'s' if len(self.problems) != 1 else ''}"
+        if self.warnings:
+            count += f", {len(self.warnings)} warning{'s' if len(self.warnings) != 1 else ''}"
+        lines = [f"{where}: {count}"]
         lines += [f"  {problem}" for problem in self.problems]
+        lines += [f"  warning: {warning}" for warning in self.warnings]
         return "\n".join(lines)
 
 
@@ -113,6 +136,7 @@ class Section:
     Each reader returns the checked value, or None after recording a problem.
     Call ``finish()`` on the top-level section once every field has been read;
     it reports fields in the file that nothing asked for (usually typos).
+    ``warn`` records advice in ``warnings``, a list shared with nested blocks.
     """
 
     def __init__(
@@ -122,9 +146,11 @@ class Section:
         problems: list[Problem],
         *,
         readable: bool = True,
+        warnings: list[Problem] | None = None,
     ) -> None:
         self.path = path
         self.problems = problems
+        self.warnings: list[Problem] = [] if warnings is None else warnings
         self._asked: list[str] = []
         self._children: list[Section] = []
         # An unreadable section stays silent: its one problem has already been
@@ -141,6 +167,10 @@ class Section:
 
     def _report(self, key: object, message: str) -> None:
         self.problems.append(Problem(self._path_of(key), message))
+
+    def warn(self, key: str, message: str) -> None:
+        """Record advice about a field without stopping the design from loading."""
+        self.warnings.append(Problem(self._path_of(key), message))
 
     def _raw(self, key: str, default: Any) -> tuple[bool, Any]:
         """Fetch a field. Returns (present, value).
@@ -252,7 +282,9 @@ class Section:
                 readable = False
             else:
                 data = self._data[key]
-        child = Section(data, self._path_of(key), self.problems, readable=readable)
+        child = Section(
+            data, self._path_of(key), self.problems, readable=readable, warnings=self.warnings
+        )
         self._children.append(child)
         return child
 

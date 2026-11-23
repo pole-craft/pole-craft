@@ -7,9 +7,17 @@ from typing import Callable
 import numpy as np
 import pytest
 
+from polecraft.core.materials import Conductor, load_material
 from polecraft.core.winding import (
+    MAX_PACKING,
     Coil,
+    CoilShape,
+    PhaseWinding,
     Symmetry,
+    mean_turn_length,
+    phase_winding,
+    slot_fill,
+    wire_area,
     combination_problem,
     concentrated_winding,
     layout_string,
@@ -355,3 +363,128 @@ def test_phase_axis_is_on_tooth_0_when_a_phase_group_is_symmetric_about_it() -> 
 def test_phase_axis_rejects_unbalanced_combinations() -> None:
     with pytest.raises(ValueError, match="three-phase"):
         phase_axis_angle(12, 12)
+
+
+# Electrical model
+
+MM = 1e-3
+COPPER = Conductor(resistivity=1.7241e-8, temperature_coefficient=0.00393, density=8960.0)
+SHAPE = CoilShape(tooth_width=3.0 * MM, thickness=2.0 * MM, side_area=12.0 * MM**2)
+
+
+def a_winding(connection: str = "star", strands: int = 1) -> PhaseWinding:
+    return PhaseWinding(
+        series_turns=240,
+        strands=strands,
+        wire_diameter=0.5 * MM,
+        turn_length=mean_turn_length(SHAPE, 12.0 * MM),
+        conductor=COPPER,
+        temperature=100.0,
+        connection=connection,
+        fill=slot_fill(SHAPE, 20, strands, 0.5 * MM),
+    )
+
+
+def test_wire_area_of_half_a_millimetre() -> None:
+    assert wire_area(0.5 * MM) == pytest.approx(0.19635 * MM**2, rel=1e-5)
+
+
+def test_slot_fill_by_hand() -> None:
+    # 20 turns x 2 strands of 0.5 mm: 40 x 0.19635 = 7.854 mm2 in 12 mm2.
+    fill = slot_fill(SHAPE, 20, 2, 0.5 * MM)
+    assert fill.conductors == 40
+    assert fill.copper_fill == pytest.approx(7.854 / 12.0, rel=1e-4)
+    assert fill.packing == fill.copper_fill and not fill.insulated
+    # Over the enamel, 0.55 mm: 40 x 0.23758 = 9.503 mm2.
+    insulated = slot_fill(SHAPE, 20, 2, 0.5 * MM, 0.55 * MM)
+    assert insulated.copper_fill == fill.copper_fill
+    assert insulated.packing == pytest.approx(9.503 / 12.0, rel=1e-4) and insulated.insulated
+
+
+def test_packing_limit_is_that_of_circles_in_a_plane() -> None:
+    assert MAX_PACKING == pytest.approx(0.9069, abs=1e-4)
+    wires = MAX_PACKING * SHAPE.side_area / wire_area(0.5 * MM)  # just over 55 wires
+    assert slot_fill(SHAPE, math.floor(wires), 1, 0.5 * MM).fits
+    assert not slot_fill(SHAPE, math.ceil(wires), 1, 0.5 * MM).fits
+
+
+def test_mean_turn_length_by_hand() -> None:
+    # 2 x 12 + 2 x 3 + pi x 2 = 36.283 mm.
+    assert mean_turn_length(SHAPE, 12.0 * MM) == pytest.approx(36.283 * MM, rel=1e-4)
+    # The default end overhang is the coil's own thickness.
+    assert mean_turn_length(SHAPE, 12.0 * MM, 2.0 * MM) == mean_turn_length(SHAPE, 12.0 * MM)
+    # A 4 mm overhang: 2 x 12 + 2 x 3 + pi (2 + 4) / 2 = 39.425 mm.
+    assert mean_turn_length(SHAPE, 12.0 * MM, 4.0 * MM) == pytest.approx(39.425 * MM, rel=1e-4)
+
+
+def test_phase_resistance_matches_a_hand_calculation() -> None:
+    # Copper at 100 C: 1.7241e-8 x (1 + 0.00393 x 80) = 2.26616e-8 ohm m.
+    # Wire: 240 turns x 36.2832 mm = 8.70796 m; area 0.196350 mm2.
+    # R = 2.26616e-8 x 8.70796 / 0.196350e-6 = 1.00502 ohm.
+    winding = a_winding()
+    assert winding.wire_length == pytest.approx(8.70796, rel=1e-5)
+    assert winding.resistance() == pytest.approx(1.00502, rel=1e-5)
+    # At 20 C the resistivity is the tabulated one: 1.00502 / 1.3144.
+    assert winding.resistance(20.0) == pytest.approx(1.00502 / 1.3144, rel=1e-5)
+
+
+def test_strands_in_hand_share_the_current() -> None:
+    assert a_winding(strands=2).resistance() == pytest.approx(a_winding().resistance() / 2)
+
+
+def test_star_line_quantities() -> None:
+    star = a_winding("star")
+    r = star.resistance()
+    assert star.line_resistance() == pytest.approx(2.0 * r)
+    assert star.line_current(10.0) == 10.0
+    assert star.line_voltage(10.0) == pytest.approx(10.0 * math.sqrt(3.0))
+
+
+def test_delta_line_quantities() -> None:
+    delta = a_winding("delta")
+    r = delta.resistance()
+    # One phase in parallel with the other two: R x 2R / 3R.
+    assert delta.line_resistance() == pytest.approx(r * 2.0 * r / (3.0 * r))
+    assert delta.line_current(10.0) == pytest.approx(10.0 * math.sqrt(3.0))
+    assert delta.line_voltage(10.0) == 10.0
+
+
+def test_star_and_delta_deliver_the_same_power_for_the_same_phase_quantities() -> None:
+    for winding in (a_winding("star"), a_winding("delta")):
+        # Three phases: sqrt 3 x line voltage x line current = 3 x phase power.
+        power = math.sqrt(3.0) * winding.line_voltage(48.0) * winding.line_current(5.0)
+        assert power == pytest.approx(3.0 * 48.0 * 5.0)
+        assert winding.copper_loss(5.0) == pytest.approx(3.0 * 25.0 * winding.resistance())
+
+
+def test_example_design_winding(repo_root) -> None:
+    from polecraft.design import load_design
+    from polecraft.machines import machine_for
+
+    machine = machine_for(load_design(repo_root / "designs" / "qdd_outer_36s42p.yaml"))
+    winding = phase_winding(machine)
+    shape = machine.coil_shape()
+    # 36 slots: 12 coils of 20 turns in each phase.
+    assert winding.series_turns == 240
+    assert winding.conductor == load_material("copper")
+    assert winding.temperature == 100.0 and winding.connection == "star"
+    turn = 2 * 12.0 * MM + 2 * 3.0 * MM + math.pi * shape.thickness
+    assert winding.turn_length == pytest.approx(turn, rel=1e-12)
+    expected = COPPER.resistivity_at(100.0) * 240 * turn / wire_area(0.5 * MM)
+    assert winding.resistance() == pytest.approx(expected, rel=1e-12)
+    assert winding.fill.copper_fill == pytest.approx(20 * wire_area(0.5 * MM) / shape.side_area)
+
+
+def test_winding_needs_a_conductor_from_the_library(repo_root) -> None:
+    import dataclasses
+
+    from polecraft.design import load_design
+    from polecraft.machines import machine_for
+
+    design = load_design(repo_root / "designs" / "qdd_outer_36s42p.yaml")
+    for name, message in (("silver", "unknown material"), ("M270-35A", "not a conductor")):
+        changed = dataclasses.replace(
+            design, winding=dataclasses.replace(design.winding, conductor=name)
+        )
+        with pytest.raises(ValueError, match=message):
+            phase_winding(machine_for(changed))

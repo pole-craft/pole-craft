@@ -41,6 +41,7 @@
   },
   "winding": {
    "wire_diameter_mm": 0.5,
+   "insulated_diameter_mm": null,
    "turns_per_coil": 20,
    "parallel_strands": 1,
    "conductor": "copper",
