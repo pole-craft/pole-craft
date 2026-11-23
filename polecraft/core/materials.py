@@ -25,6 +25,9 @@ from scipy.interpolate import PchipInterpolator
 # measured value differs from it by less than one part in a billion.
 MU0 = 4e-7 * math.pi
 
+# Temperature in degrees Celsius at which library data for magnets is given.
+REFERENCE_TEMPERATURE = 20.0
+
 
 class Material(Protocol):
     """What the solver needs from a material."""
@@ -70,15 +73,71 @@ COPPER = LinearMaterial(1.0)
 
 @dataclass(frozen=True)
 class Magnet:
-    """A permanent magnet on its recoil line: B = mu_r mu0 H + Br."""
+    """A permanent magnet on its recoil line: B = mu_r mu0 H + Br.
+
+    The numbers are those at ``temperature`` (degrees Celsius, 20 for a
+    library entry). The two coefficients, as fractions per kelvin about 20 C
+    (-0.0012 is -0.12 %/K), say how the remanence and the coercivity change
+    with temperature; ``at_temperature`` applies them. They are None when
+    the entry has no temperature data.
+    """
 
     remanence: float  # Br in tesla
     relative_permeability: float = 1.05  # recoil permeability
+    remanence_coefficient: float | None = None  # per kelvin
+    coercivity_coefficient: float | None = None  # per kelvin
+    temperature: float = REFERENCE_TEMPERATURE  # degrees Celsius
 
     def __post_init__(self) -> None:
         if not (math.isfinite(self.remanence) and self.remanence >= 0.0):
             raise ValueError(f"remanence must be zero or more, in tesla, not {self.remanence}")
         LinearMaterial(self.relative_permeability)  # checks the permeability
+        for name in ("remanence_coefficient", "coercivity_coefficient"):
+            value = getattr(self, name)
+            if value is not None and not math.isfinite(value):
+                raise ValueError(f"{name} must be a finite number, not {value}")
+        if not math.isfinite(self.temperature):
+            raise ValueError(f"temperature must be a finite number, not {self.temperature}")
+
+    @property
+    def coercivity(self) -> float:
+        """Normal coercivity Hcb in A/m: where the recoil line crosses B = 0."""
+        return self.remanence / (self.relative_permeability * MU0)
+
+    def at_temperature(self, temperature: float) -> Magnet:
+        """The magnet at ``temperature`` in degrees Celsius, from the 20 C entry.
+
+        Br and Hcb each change linearly with their coefficient. The recoil
+        permeability follows from them, mu_r = Br / (mu0 Hcb), so the recoil
+        line stays consistent. The linear law is an approximation that holds
+        over the range a datasheet gives, not far beyond it. Raises
+        ValueError for a magnet with no temperature data, one that is not at
+        20 C, or a temperature at which Br or Hcb would reach zero.
+        """
+        if self.remanence_coefficient is None or self.coercivity_coefficient is None:
+            raise ValueError("this magnet has no temperature coefficients")
+        if self.temperature != REFERENCE_TEMPERATURE:
+            raise ValueError(
+                f"start from the {REFERENCE_TEMPERATURE:g} C magnet; "
+                f"this one is already at {self.temperature:g} C"
+            )
+        if not math.isfinite(temperature):
+            raise ValueError(f"temperature must be a finite number, not {temperature}")
+        rise = temperature - REFERENCE_TEMPERATURE
+        remanence = self.remanence * (1.0 + self.remanence_coefficient * rise)
+        coercivity = self.coercivity * (1.0 + self.coercivity_coefficient * rise)
+        if remanence <= 0.0 or coercivity <= 0.0:
+            raise ValueError(
+                f"at {temperature:g} C the linear temperature law gives a remanence or "
+                f"coercivity of zero or less; it does not hold that far from 20 C"
+            )
+        return Magnet(
+            remanence=remanence,
+            relative_permeability=remanence / (MU0 * coercivity),
+            remanence_coefficient=self.remanence_coefficient,
+            coercivity_coefficient=self.coercivity_coefficient,
+            temperature=temperature,
+        )
 
     @property
     def linear(self) -> bool:
@@ -249,6 +308,12 @@ _UNITS = {
     "resistivity_ohm_m": "ohm metre at 20 C",
     "temperature_coefficient_per_K": "per kelvin",
     "density_kg_m3": "kilogram per cubic metre",
+    "remanence_temp_coefficient_per_K": "fraction per kelvin, about 20 C",
+    "coercivity_temp_coefficient_per_K": "fraction per kelvin, about 20 C",
+}
+_COEFFICIENTS = {
+    "remanence_temp_coefficient_per_K": "remanence_coefficient",
+    "coercivity_temp_coefficient_per_K": "coercivity_coefficient",
 }
 
 
@@ -335,6 +400,17 @@ def _number(data: dict, field: str, name: str, *, positive: bool = True) -> floa
     return float(value)
 
 
+def _coefficient(data: dict, field: str, name: str) -> float:
+    """A temperature coefficient: any finite number, normally negative for a magnet."""
+    value = data.get(field)
+    if not isinstance(value, (int, float)) or isinstance(value, bool) or not math.isfinite(value):
+        raise ValueError(
+            f"material file {name}.yaml: '{field}' ({_UNITS[field]}) must be a number, "
+            f"not {value!r}"
+        )
+    return float(value)
+
+
 def load_material(name: str) -> BHCurve | Magnet | Conductor:
     """Load a material from the library by name.
 
@@ -345,9 +421,19 @@ def load_material(name: str) -> BHCurve | Magnet | Conductor:
     data = _read_entry(name)
     kind = data["kind"]
     if kind == "magnet":
+        coefficients = {}
+        given = [f for f in _COEFFICIENTS if f in data]
+        if given and len(given) != len(_COEFFICIENTS):
+            raise ValueError(
+                f"material file {name}.yaml: give both {' and '.join(_COEFFICIENTS)}, or neither"
+            )
+        for field, argument in _COEFFICIENTS.items():
+            if field in data:
+                coefficients[argument] = _coefficient(data, field, name)
         return Magnet(
             remanence=_number(data, "remanence_T", name, positive=False),
             relative_permeability=_number(data, "relative_permeability", name),
+            **coefficients,
         )
     if kind == "conductor":
         return Conductor(

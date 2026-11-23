@@ -502,6 +502,74 @@ def test_magnet_placeholder_says_it_is_not_a_datasheet_value() -> None:
     assert "not a datasheet value" in text.lower()
 
 
+@pytest.fixture
+def grade() -> Magnet:
+    return load_material("generic_NdFeB_placeholder")
+
+
+def test_magnet_at_20_c_has_its_file_values(grade: Magnet) -> None:
+    cold = grade.at_temperature(20.0)
+    assert cold.remanence == 1.2
+    assert cold.relative_permeability == pytest.approx(1.05, rel=1e-12)
+    assert cold.coercivity == pytest.approx(1.2 / (1.05 * MU0), rel=1e-12)
+    assert grade.coercivity == cold.coercivity
+
+
+def test_magnet_coefficients_come_from_the_file(grade: Magnet) -> None:
+    assert grade.remanence_coefficient == -0.0012
+    assert grade.coercivity_coefficient == -0.0045
+    assert grade.temperature == 20.0
+
+
+def test_remanence_and_coercivity_fall_by_their_coefficients(grade: Magnet) -> None:
+    hot = grade.at_temperature(80.0)  # 60 K above 20 C
+    assert hot.remanence == pytest.approx(1.2 * (1.0 - 0.0012 * 60.0), rel=1e-12)
+    assert hot.coercivity == pytest.approx(grade.coercivity * (1.0 - 0.0045 * 60.0), rel=1e-12)
+    assert hot.temperature == 80.0
+
+
+def test_both_fall_as_the_magnet_warms_and_rise_as_it_cools(grade: Magnet) -> None:
+    temperatures = [-20.0, 20.0, 60.0, 100.0, 140.0]
+    magnets = [grade.at_temperature(t) for t in temperatures]
+    assert all(a.remanence > b.remanence for a, b in zip(magnets, magnets[1:]))
+    assert all(a.coercivity > b.coercivity for a, b in zip(magnets, magnets[1:]))
+
+
+def test_recoil_line_stays_consistent_with_br_and_hcb(grade: Magnet) -> None:
+    hot = grade.at_temperature(100.0)
+    # B = mu_r mu0 H + Br is zero at H = -Hcb and Br at H = 0.
+    assert hot.relative_permeability * MU0 * -hot.coercivity + hot.remanence == pytest.approx(
+        0.0, abs=1e-12
+    )
+    assert hot.relative_permeability > grade.relative_permeability  # Hcb falls faster
+
+
+def test_magnet_with_no_temperature_data_cannot_be_moved() -> None:
+    with pytest.raises(ValueError, match="no temperature coefficients"):
+        Magnet(remanence=1.2).at_temperature(80.0)
+
+
+def test_a_warmed_magnet_is_not_warmed_again(grade: Magnet) -> None:
+    with pytest.raises(ValueError, match="start from the 20 C magnet"):
+        grade.at_temperature(80.0).at_temperature(100.0)
+
+
+@pytest.mark.parametrize("temperature", [250.0, 1000.0, float("nan"), float("inf")])
+def test_temperature_outside_the_linear_law_is_rejected(grade: Magnet, temperature: float) -> None:
+    with pytest.raises(ValueError, match="temperature must be|does not hold"):
+        grade.at_temperature(temperature)
+
+
+@pytest.mark.parametrize("name", ["remanence_coefficient", "coercivity_coefficient", "temperature"])
+def test_magnet_rejects_a_non_finite_temperature_value(name: str) -> None:
+    with pytest.raises(ValueError, match=name):
+        Magnet(remanence=1.2, **{name: float("nan")})
+
+
+def test_magnet_reluctivity_does_not_change_with_the_coefficients(grade: Magnet) -> None:
+    assert grade.reluctivity(0.5) == Magnet(1.2, 1.05).reluctivity(0.5)
+
+
 def test_copper_resistivity_at_20_c_is_the_annealed_standard() -> None:
     copper = load_material("copper")
     assert copper.resistivity == 1.7241e-8
@@ -544,6 +612,10 @@ def test_material_names_cannot_be_paths(name: str) -> None:
 
 HEAD = "name: broken\ndescription: x\nsource: y\n"
 MAGNET = HEAD + "kind: magnet\nremanence_T: 1.2\nrelative_permeability: 1.05\n"
+COEFFICIENTS = (
+    "remanence_temp_coefficient_per_K: -0.001\n"
+    "coercivity_temp_coefficient_per_K: -0.004\n"
+)
 CONDUCTOR = (
     HEAD
     + "kind: conductor\nresistivity_ohm_m: 1.7e-8\n"
@@ -571,6 +643,18 @@ CONDUCTOR = (
         (MAGNET.replace("1.2", "-1.2"), "'remanence_T' \\(tesla\\) must be zero or more"),
         (MAGNET.replace("1.05", "zero"), "'relative_permeability'"),
         (MAGNET.replace("1.2", "true"), "'remanence_T'"),
+        (
+            MAGNET + "remanence_temp_coefficient_per_K: -0.001\n",
+            "give both remanence_temp_coefficient_per_K and coercivity_temp_coefficient_per_K",
+        ),
+        (
+            MAGNET + COEFFICIENTS.replace("-0.001\n", "x\n", 1),
+            "'remanence_temp_coefficient_per_K' \\(fraction per kelvin, about 20 C\\) must be a number",
+        ),
+        (
+            MAGNET + COEFFICIENTS.replace("-0.004", ".inf"),
+            "'coercivity_temp_coefficient_per_K'",
+        ),
         (CONDUCTOR.replace("1.7e-8", "0"), "'resistivity_ohm_m' \\(ohm metre at 20 C\\)"),
         (CONDUCTOR.replace("8960", ".nan"), "'density_kg_m3'"),
         (
