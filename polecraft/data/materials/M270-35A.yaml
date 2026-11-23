@@ -1,0 +1,68 @@
+# Non-oriented fully processed electrical steel, grade M270-35A (EN 10106),
+# 0.35 mm thick.
+#
+# Source: Cogent Power, "Electrical Steel Non Oriented Fully Processed"
+# brochure (Cogent 2002-11), typical data tables for grades from
+# Surahammars Bruks AB. All values are typical, not guaranteed.
+#
+# Test method: 25 cm Epstein frame. To IEC 60404-2 at 50, 100 and 200 Hz,
+# to IEC 60404-10 at 400 to 2500 Hz. Half of the strips in the rolling
+# direction and half across it; tested as sheared, not stress relief
+# annealed. Peak values under sinusoidal polarisation.
+#
+# The magnetisation table is J (peak polarisation) against H (peak field
+# strength) at 50 Hz, as the brochure gives it, on pages 22 and 23. The
+# loader converts it to B = J + mu0 H. Below 0.1 T the brochure has no
+# data; the curve starts at B = 0, H = 0. Above 1.8 T the curve is
+# extended with a slope that approaches that of air (see BHCurve).
+#
+# Copied from the brochure on 2026-11-23. Cross-checks against the same
+# brochure: the loss table gives 1.01 W/kg at 1.0 T and 2.47 W/kg at 1.5 T,
+# as the typical properties table on page 5 does; the magnetisation table
+# gives about 1.54, 1.65 and 1.77 T at 2500, 5000 and 10000 A/m, as page 5
+# does.
+name: M270-35A
+kind: steel
+description: Non-oriented electrical steel M270-35A, 0.35 mm. Typical values, not guaranteed.
+source: >-
+  Cogent Power, Electrical Steel Non Oriented Fully Processed (brochure,
+  Cogent 2002-11), typical data tables pages 18-25 and typical physical
+  properties page 8. Typical, not guaranteed. Epstein frame, IEC 60404-2 and
+  IEC 60404-10.
+thickness_mm: 0.35
+density_kg_m3: 7650             # conventional density 7.65 kg/dm3, page 8
+resistivity_ohm_m: 52.0e-8      # 52 micro-ohm cm, page 8
+# Rows are [J in tesla, H in A/m], 50 Hz, pages 22 and 23.
+jh_curve:
+  - [0.10, 30.0]
+  - [0.20, 39.6]
+  - [0.30, 46.0]
+  - [0.40, 52.0]
+  - [0.50, 58.2]
+  - [0.60, 65.2]
+  - [0.70, 73.3]
+  - [0.80, 83.1]
+  - [0.90, 95.5]
+  - [1.00, 112]
+  - [1.10, 136]
+  - [1.20, 178]
+  - [1.30, 272]
+  - [1.40, 596]
+  - [1.50, 1700]
+  - [1.60, 3880]
+  - [1.70, 7160]
+  - [1.80, 11600]
+# Specific total loss in W/kg against peak polarisation J in tesla, from
+# 0.1 T in steps of 0.1 T, at each frequency in Hz. Pages 18 and 19 (50 Hz),
+# 24 (100 and 200 Hz), 25 (400 and 1000 Hz) and 26 (2500 Hz).
+loss_W_per_kg:
+  50: [0.03, 0.07, 0.13, 0.22, 0.31, 0.43, 0.54, 0.68, 0.83, 1.01,
+       1.20, 1.42, 1.70, 2.12, 2.47, 2.80, 3.05, 3.25]
+  100: [0.04, 0.16, 0.34, 0.55, 0.80, 1.08, 1.38, 1.73, 2.10, 2.51,
+        2.98, 3.51, 4.15, 4.97, 5.92]
+  200: [0.09, 0.37, 0.79, 1.31, 1.91, 2.61, 3.39, 4.26, 5.23, 6.30,
+        7.51, 8.88, 10.5, 12.5, 14.9]
+  400: [0.21, 0.92, 1.99, 3.33, 4.94, 6.84, 9.00, 11.4, 14.2, 17.3,
+        20.9, 24.9, 29.5, 35.4, 41.8]
+  1000: [0.99, 3.67, 7.63, 12.7, 18.9, 26.4, 35.4, 46.0, 58.4, 73.0, 90.1]
+  2500: [4.10, 14.9, 30.7, 52.0, 79.1, 113, 156, 209, 274, 353]

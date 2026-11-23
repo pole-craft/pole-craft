@@ -197,7 +197,10 @@ def test_material_models_example(repo_root: Path, tmp_path: Path) -> None:
     assert done.returncode == 0, done.stderr
     assert done.stderr == ""
     lines = done.stdout.splitlines()
-    assert lines[0] == "materials in the library: copper, generic_35A_placeholder, generic_NdFeB_placeholder"
+    assert lines[0] == (
+        "materials in the library: M270-35A, copper, generic_35A_placeholder, "
+        "generic_NdFeB_placeholder"
+    )
     assert "relative permeability 1.00" in lines[2]
     assert "remanence 1.2 T" in lines[3] and "1.05" in lines[3] and "stand-in" in lines[3]
     assert "placeholder steel (not real steel data)" in lines

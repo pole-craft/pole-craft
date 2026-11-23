@@ -14,9 +14,12 @@ from polecraft.core.materials import (
     MU0,
     BHCurve,
     Conductor,
+    CoreLossCoefficients,
+    CoreLossData,
     FrohlichSteel,
     LinearMaterial,
     Magnet,
+    load_core_loss,
     load_material,
     material_names,
 )
@@ -224,27 +227,121 @@ def test_differential_reluctivity_is_the_slope_of_the_curve(curve: BHCurve) -> N
 # BH curve: known answers
 
 
-def test_straight_line_table_is_a_linear_material() -> None:
+def test_straight_line_table_is_linear_within_the_table() -> None:
     b = np.array([0.0, 0.4, 1.0, 1.7])
     curve = BHCurve(b, b / (1000.0 * MU0))
-    sample = np.linspace(0.0, 3.0, 50)
+    sample = np.linspace(0.0, 1.7, 50)
     assert curve.reluctivity(sample) == pytest.approx(1.0 / (1000.0 * MU0), rel=1e-12)
     assert curve.reluctivity_derivative(sample) == pytest.approx(0.0, abs=1e-9 / MU0)
 
 
-def test_beyond_the_table_the_curve_is_a_straight_line(steel: BHCurve) -> None:
-    end_b, end_h = STEEL_B[-1], STEEL_H[-1]
-    b = np.array([end_b + 0.1, end_b + 0.2, end_b + 0.4])
+def slope_of(curve: BHCurve, b: np.ndarray, step: float = 1e-6) -> np.ndarray:
+    """dH/dB by central difference."""
+    return (curve.field_strength(b + step) - curve.field_strength(b - step)) / (2.0 * step)
+
+
+def test_tail_joins_the_table_with_the_same_value_and_slope(curve: BHCurve) -> None:
+    end = curve.b[-1]
+    below, above = end - 1e-12, end + 1e-12
+    assert float(curve.field_strength(above)) == pytest.approx(float(curve.field_strength(below)))
+    # d(nu)/dB = (dH/dB - nu) / B, so a jump in slope would show here.
+    left = float(curve.reluctivity_derivative(below))
+    right = float(curve.reluctivity_derivative(above))
+    assert right == pytest.approx(left, rel=1e-6, abs=1e-9 / MU0)
+
+
+def test_beyond_the_table_the_slope_approaches_that_of_air(curve: BHCurve) -> None:
+    end = curve.b[-1]
+    b = end + np.array([0.01, 0.1, 0.5, 2.0, 30.0])
+    slopes = slope_of(curve, b) * MU0  # 1 for air
+    assert np.all(np.diff(slopes) >= -1e-6)  # never falls on the way to air
+    assert slopes[0] < slopes[2] and np.all(slopes <= 1.0 + 1e-6)
+    assert slopes[-1] == pytest.approx(1.0, abs=1e-6)
+
+
+def test_beyond_the_table_polarisation_levels_off_at_saturation(curve: BHCurve) -> None:
+    b = curve.b[-1] + np.array([0.0, 0.05, 0.2, 1.0, 20.0])
+    j = b - MU0 * curve.field_strength(b)
+    assert np.all(np.diff(j) > 0.0)
+    assert j[-1] == pytest.approx(curve.saturation, abs=1e-9)
+
+
+def test_curve_is_monotonic_far_beyond_the_table(curve: BHCurve) -> None:
+    b = np.linspace(0.0, curve.b[-1] + 5.0, 20001)
+    assert np.all(np.diff(curve.field_strength(b)) > 0.0)
+
+
+def test_default_saturation_follows_the_stated_rule(steel: BHCurve) -> None:
+    end_slope = float(slope_of(steel, np.array([STEEL_B[-1] - 1e-4]), 1e-6)[0])
+    rule = STEEL_B[-1] - MU0 * STEEL_H[-1] + 0.1 * (1.0 - MU0 * end_slope)
+    assert steel.saturation == pytest.approx(rule, rel=1e-3)
+
+
+def test_given_saturation_is_used(steel: BHCurve) -> None:
+    curve = BHCurve(STEEL_B, STEEL_H, saturation=2.05)
+    assert curve.saturation == 2.05
+    b = np.array([30.0])
+    assert float(b[0] - MU0 * curve.field_strength(b)[0]) == pytest.approx(2.05, abs=1e-9)
+    # Within the table nothing changes.
+    inside = np.linspace(0.0, STEEL_B[-1], 101)
+    assert curve.field_strength(inside) == pytest.approx(steel.field_strength(inside), rel=1e-14)
+
+
+@pytest.mark.parametrize("saturation", [1.0, 1.786, float("nan"), float("inf")])
+def test_saturation_below_the_last_row_is_rejected(saturation: float) -> None:
+    with pytest.raises(ValueError, match="saturation polarisation must be above"):
+        BHCurve(STEEL_B, STEEL_H, saturation=saturation)
+
+
+def test_table_already_as_soft_as_air_continues_straight() -> None:
+    b = np.array([0.0, 1.0, 2.0])
+    curve = BHCurve(b, b / MU0)
+    assert curve.saturation is None
+    assert curve.reluctivity(np.array([3.0, 5.0])) == pytest.approx(1.0 / MU0, rel=1e-12)
+
+
+# Stacking factor
+
+
+@pytest.mark.parametrize("factor", [0.9, 0.95, 0.97])
+def test_stacking_factor_scales_the_polarisation_at_the_table_points(
+    steel: BHCurve, factor: float
+) -> None:
+    stack = steel.stacked(factor)
+    assert np.array_equal(stack.h, steel.h)
+    assert stack.b == pytest.approx(factor * steel.b + (1.0 - factor) * MU0 * steel.h, rel=1e-15)
+    assert stack.b - MU0 * stack.h == pytest.approx(factor * (steel.b - MU0 * steel.h), abs=1e-12)
+
+
+def test_stacking_factor_scales_the_effective_flux_density_everywhere(steel: BHCurve) -> None:
+    factor = 0.95
+    stack = steel.stacked(factor)
+    b = np.linspace(0.05, 2.6, 300)  # through the table and into the tail
     h = steel.field_strength(b)
-    slopes = (h - end_h) / (b - end_b)
-    assert slopes == pytest.approx(slopes[0], rel=1e-12)
-    # It leaves the last point no flatter than the last table interval.
-    assert slopes[0] >= (STEEL_H[-1] - STEEL_H[-2]) / (STEEL_B[-1] - STEEL_B[-2])
+    effective = factor * b + (1.0 - factor) * MU0 * h
+    assert stack.field_strength(effective) == pytest.approx(h, rel=0.02)
+    assert stack.saturation == pytest.approx(factor * steel.saturation, rel=1e-12)
+
+
+def test_stacking_factor_of_one_changes_nothing(steel: BHCurve) -> None:
+    b = np.linspace(0.0, 3.0, 61)
+    assert steel.stacked(1.0).field_strength(b) == pytest.approx(steel.field_strength(b), rel=1e-12)
+
+
+def test_stacked_steel_needs_more_field_for_the_same_flux_density(steel: BHCurve) -> None:
+    b = np.linspace(0.2, 2.0, 10)
+    assert np.all(steel.stacked(0.95).field_strength(b) > steel.field_strength(b))
+
+
+@pytest.mark.parametrize("factor", [0.0, -0.5, 1.01, float("nan")])
+def test_impossible_stacking_factor_is_rejected(steel: BHCurve, factor: float) -> None:
+    with pytest.raises(ValueError, match="stacking factor"):
+        steel.stacked(factor)
 
 
 def test_two_point_table() -> None:
     curve = BHCurve([0.0, 1.0], [0.0, 200.0])
-    b = np.array([0.0, 0.3, 1.0, 2.0])
+    b = np.array([0.0, 0.3, 0.7, 1.0])
     assert curve.field_strength(b) == pytest.approx(200.0 * b)
     assert curve.reluctivity(b) == pytest.approx(200.0)
 
@@ -466,9 +563,9 @@ def test_placeholder_file_says_it_is_not_real_data() -> None:
     assert "placeholder" in text.lower()
 
 
-def test_no_real_steel_grade_is_shipped_yet() -> None:
+def test_steels_in_the_library() -> None:
     steels = [n for n in material_names() if isinstance(load_material(n), BHCurve)]
-    assert steels == ["generic_35A_placeholder"]
+    assert steels == ["M270-35A", "generic_35A_placeholder"]
 
 
 @pytest.mark.parametrize("name", material_names())
@@ -600,8 +697,8 @@ def test_conductor_rejects_impossible_values(kwargs: dict) -> None:
 
 
 def test_unknown_material_is_rejected_with_the_known_names() -> None:
-    with pytest.raises(ValueError, match="M270-35A.*generic_35A_placeholder"):
-        load_material("M270-35A")
+    with pytest.raises(ValueError, match="M330-35A.*M270-35A.*generic_35A_placeholder"):
+        load_material("M330-35A")
 
 
 @pytest.mark.parametrize("name", ["../secrets", "a/b", "", "x.yaml"])
@@ -632,7 +729,20 @@ CONDUCTOR = (
         ("name: broken\nsource: y\nkind: steel\n", "'description' must be a non-empty text"),
         ("name: broken\ndescription: x\nkind: steel\n", "'source' must be a non-empty text"),
         ("name: broken\ndescription: x\nsource: ' '\nkind: steel\n", "'source' must be"),
-        (HEAD + "kind: steel\n", "'bh_curve' must be a list"),
+        (HEAD + "kind: steel\n", "give one of 'bh_curve' and 'jh_curve'"),
+        (
+            HEAD + "kind: steel\nbh_curve: [[0, 0], [1, 9]]\njh_curve: [[0, 0], [1, 9]]\n",
+            "give one of 'bh_curve' and 'jh_curve'",
+        ),
+        (HEAD + "kind: steel\njh_curve: [[0.1, 30], [0.2]]\n", "'jh_curve' must be a list of"),
+        (
+            HEAD + "kind: steel\njh_curve: [[0.1, 30], [0.2, 20]]\n",
+            "field strength must increase",
+        ),
+        (
+            HEAD + "kind: steel\njh_curve: [[0.1, 30], [0.2, 40]]\nsaturation_polarisation_T: 0.1\n",
+            "saturation polarisation must be above",
+        ),
         (HEAD + "kind: steel\nbh_curve: [[0, 0, 0], [1, 100, 5]]\n", "'bh_curve' must be a list"),
         (HEAD + "kind: steel\nbh_curve: [[0, 0], [1, x]]\n", "'bh_curve' must be a list"),
         (
@@ -672,3 +782,139 @@ def test_a_bad_material_file_is_rejected(
     assert material_names() == ["broken"]
     with pytest.raises(ValueError, match=message):
         load_material("broken")
+
+
+# M270-35A, from the Cogent Power brochure
+
+
+def m270_file() -> dict:
+    text = resources.files("polecraft.data").joinpath("materials", "M270-35A.yaml")
+    return yaml.safe_load(text.read_text(encoding="utf-8"))
+
+
+def polarisation_at(curve: BHCurve, h: float) -> float:
+    """J at field strength ``h`` in A/m, by inverting H(B) on a fine grid."""
+    b = np.linspace(0.0, 2.5, 250001)
+    return float(np.interp(h, curve.field_strength(b), b) - MU0 * h)
+
+
+def test_m270_file_records_source_method_and_status() -> None:
+    data = m270_file()
+    text = resources.files("polecraft.data").joinpath("materials", "M270-35A.yaml").read_text(
+        encoding="utf-8"
+    )
+    assert "Cogent" in data["source"] and "2002-11" in data["source"]
+    assert "IEC 60404-2" in data["source"]
+    assert "typical, not guaranteed" in data["source"].lower()
+    assert "copied from the brochure on 2026-11-23" in text.lower()
+
+
+def test_m270_curve_is_the_brochure_table_with_j_turned_into_b() -> None:
+    data = m270_file()
+    j, h = np.array(data["jh_curve"], dtype=float).T
+    curve = load_material("M270-35A")
+    assert curve.b[0] == 0.0 and curve.h[0] == 0.0
+    assert np.array_equal(curve.h[1:], h)
+    assert curve.b[1:] == pytest.approx(j + MU0 * h, rel=1e-15)
+    assert curve.field_strength(curve.b[1:]) == pytest.approx(h, rel=1e-12)
+
+
+@pytest.mark.parametrize(("h", "j"), [(2500.0, 1.54), (5000.0, 1.65), (10000.0, 1.77)])
+def test_m270_curve_matches_the_brochure_typical_properties(h: float, j: float) -> None:
+    # Page 5 of the brochure gives these separately from the H table. The
+    # table has rows only every 0.1 T (1.6 T at 3880 A/m, 1.7 T at 7160 A/m),
+    # and between rows the curve is interpolated: at 5000 A/m it gives
+    # 1.638 T, a straight line 1.634 T. Hence 0.015 T.
+    assert polarisation_at(load_material("M270-35A"), h) == pytest.approx(j, abs=0.015)
+
+
+def test_m270_curve_reaches_air_slope_beyond_1_8_t() -> None:
+    curve = load_material("M270-35A")
+    b = np.array([1.9, 2.0, 2.5, 4.0])
+    slopes = MU0 * slope_of(curve, b)
+    assert np.all(np.diff(slopes) > 0.0) and slopes[-1] == pytest.approx(1.0, abs=1e-3)
+    assert 1.8 < curve.saturation < 2.0
+
+
+def test_m270_loss_tables_load() -> None:
+    data = load_core_loss("M270-35A")
+    assert sorted(data.tables) == [50.0, 100.0, 200.0, 400.0, 1000.0, 2500.0]
+    j, p = data.tables[50.0]
+    assert j == pytest.approx(0.1 * np.arange(1, 19))
+    assert data.thickness == pytest.approx(0.35e-3)
+    assert data.density == 7650.0 and data.resistivity == pytest.approx(52e-8)
+
+
+def test_m270_losses_match_the_brochure_typical_properties() -> None:
+    # Page 5 gives 1.01 W/kg at 1.0 T and 2.47 W/kg at 1.5 T, 50 Hz.
+    j, p = load_core_loss("M270-35A").tables[50.0]
+    assert p[np.isclose(j, 1.0)] == pytest.approx([1.01])
+    assert p[np.isclose(j, 1.5)] == pytest.approx([2.47])
+
+
+def test_eddy_coefficient_is_the_classical_sheet_formula() -> None:
+    # pi^2 (0.35e-3)^2 / (6 x 52e-8 x 7650), worked by hand: 5.0655e-5.
+    assert load_core_loss("M270-35A").eddy_coefficient() == pytest.approx(5.0655e-5, rel=1e-4)
+
+
+def test_fit_recovers_known_coefficients() -> None:
+    known = CoreLossCoefficients(hysteresis=0.02, eddy=5e-5, excess=4e-4)
+    thickness, density = 0.35e-3, 7650.0
+    resistivity = np.pi**2 * thickness**2 / (6.0 * known.eddy * density)
+    j = 0.1 * np.arange(1, 16)
+    tables = {f: (j, known.loss(f, j)) for f in (50.0, 200.0, 1000.0)}
+    fitted = CoreLossData(thickness, density, resistivity, tables).fit()
+    assert fitted.eddy == pytest.approx(known.eddy, rel=1e-12)
+    assert fitted.hysteresis == pytest.approx(known.hysteresis, rel=1e-9)
+    assert fitted.excess == pytest.approx(known.excess, rel=1e-9)
+
+
+def test_m270_fit_reproduces_the_loss_tables() -> None:
+    data = load_core_loss("M270-35A")
+    fit = data.fit()
+    assert fit.hysteresis > 0.0 and fit.excess > 0.0
+    f, j, p = data.points(1000.0, 0.3)
+    error = fit.loss(f, j) / p - 1.0
+    assert np.sqrt(np.mean(error**2)) < 0.10
+    assert np.max(np.abs(error)) < 0.25
+
+
+def test_loss_terms_scale_with_frequency_as_stated() -> None:
+    hysteresis = CoreLossCoefficients(1.0, 0.0, 0.0).loss([50.0, 100.0], 1.2)
+    eddy = CoreLossCoefficients(0.0, 1.0, 0.0).loss([50.0, 100.0], 1.2)
+    excess = CoreLossCoefficients(0.0, 0.0, 1.0).loss([50.0, 100.0], 1.2)
+    assert hysteresis[1] / hysteresis[0] == pytest.approx(2.0)
+    assert eddy[1] / eddy[0] == pytest.approx(4.0)
+    assert excess[1] / excess[0] == pytest.approx(2.0**1.5)
+    assert CoreLossCoefficients(1.0, 1.0, 1.0).loss(400.0, 0.0) == 0.0
+
+
+@pytest.mark.parametrize("name", ["generic_35A_placeholder", "copper", "generic_NdFeB_placeholder"])
+def test_material_without_loss_data_is_rejected(name: str) -> None:
+    with pytest.raises(ValueError, match="no loss data"):
+        load_core_loss(name)
+
+
+@pytest.mark.parametrize(
+    ("losses", "message"),
+    [
+        ("{50: [0.1, 0.05]}", "must be positive and rise"),
+        ("{50: [0.0, 0.05]}", "must be positive and rise"),
+        ("{50: []}", "must map frequencies"),
+        ("{-50: [0.1, 0.2]}", "must map frequencies"),
+        ("[0.1, 0.2]", "must map frequencies"),
+    ],
+)
+def test_bad_loss_table_is_rejected(
+    losses: str, message: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    text = (
+        "name: broken\ndescription: x\nsource: y\nkind: steel\n"
+        "bh_curve: [[0, 0], [1, 100]]\nthickness_mm: 0.35\ndensity_kg_m3: 7650\n"
+        f"resistivity_ohm_m: 5.2e-7\nloss_W_per_kg: {losses}\n"
+    )
+    (tmp_path / "materials").mkdir()
+    (tmp_path / "materials" / "broken.yaml").write_text(text, encoding="utf-8")
+    monkeypatch.setattr(resources, "files", lambda package: tmp_path)
+    with pytest.raises(ValueError, match=message):
+        load_core_loss("broken")

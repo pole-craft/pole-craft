@@ -20,6 +20,7 @@ import numpy as np
 import yaml
 from numpy.typing import ArrayLike, NDArray
 from scipy.interpolate import PchipInterpolator
+from scipy.optimize import nnls
 
 # Permeability of free space in H/m. The classical value, as FEMM uses; the
 # measured value differs from it by less than one part in a billion.
@@ -225,16 +226,29 @@ class BHCurve:
     The table starts at B = 0, H = 0 and both columns increase. Between the
     table points H(B) is a monotone cubic (PCHIP), so the curve passes
     through every point, never turns back, and has a continuous slope, which
-    the Newton iteration needs to converge smoothly. Beyond the last point
-    the curve continues as a straight line with the slope it has there.
+    the Newton iteration needs to converge smoothly.
 
-    That straight line is a stand-in, not physics: real steel ends up with
-    the slope of air (1 / mu0). Use a table that reaches past the flux
-    densities in the machine.
+    Beyond the last point (b_n, h_n) the polarisation J = B - mu0 H levels
+    off at ``saturation`` and the slope of the curve tends to that of air:
+
+        H = h_n + u / mu0 - (dJ / mu0) (1 - exp(-u / L)),   u = B - b_n,
+
+    with dJ = saturation - J_n, and L chosen so that the slope at the last
+    point is the one the table has there. When no saturation is given the
+    tail adds dJ = (b_n - b_n-1) (1 - mu0 s_n), the last table step scaled
+    by how far the end slope s_n = dH/dB is from that of air. That is a
+    rule, not a measurement: for a table ending at 1.8 T it levels off near
+    1.9 T, likely below the real saturation, so beyond the table the steel
+    is taken as more saturated than it is. A table whose end is already as
+    soft as air continues as a straight line.
     """
 
-    def __init__(self, b: ArrayLike, h: ArrayLike) -> None:
-        """Build the curve from flux densities ``b`` in tesla and field strengths ``h`` in A/m."""
+    def __init__(self, b: ArrayLike, h: ArrayLike, saturation: float | None = None) -> None:
+        """Build the curve from flux densities ``b`` in tesla and field strengths ``h`` in A/m.
+
+        ``saturation`` is the polarisation in tesla the steel tends to
+        beyond the table; it must be above the polarisation at the last row.
+        """
         self.b = np.array(b, dtype=float)
         self.h = np.array(h, dtype=float)
         _check_table(self.b, self.h)
@@ -254,6 +268,39 @@ class BHCurve:
         self._d = slope
         self._c2 = np.append((3.0 * secant - 2.0 * slope[:-1] - slope[1:]) / width, 0.0)
         self._c3 = np.append((slope[:-1] + slope[1:] - 2.0 * secant) / width**2, 0.0)
+        self._tail(slope[-1], width[-1], saturation)
+
+    def _tail(self, end_slope: float, last_step: float, saturation: float | None) -> None:
+        """Set the law beyond the table; see the class docstring."""
+        end_polarisation = self.b[-1] - MU0 * self.h[-1]
+        softness = 1.0 - MU0 * end_slope  # 0 when the end is as soft as air
+        if saturation is not None and not (
+            math.isfinite(saturation) and saturation > end_polarisation
+        ):
+            raise ValueError(
+                f"saturation polarisation must be above the polarisation at the last row "
+                f"({end_polarisation:.4g} T), not {saturation}"
+            )
+        if softness <= 1e-9:
+            self.saturation: float | None = None
+            self._rise = self._length = 0.0
+            return
+        rise = saturation - end_polarisation if saturation is not None else last_step * softness
+        self.saturation = end_polarisation + rise
+        self._rise = rise / MU0  # dJ / mu0 in A/m
+        self._length = rise / softness  # L in tesla
+
+    def stacked(self, factor: float) -> BHCurve:
+        """The curve of a lamination stack with this stacking factor (0 < factor <= 1).
+
+        Across the laminations the steel and the gaps between them carry the
+        same H side by side, so B = factor B_steel + (1 - factor) mu0 H, and
+        the polarisation, saturation included, scales by the factor.
+        """
+        if not (math.isfinite(factor) and 0.0 < factor <= 1.0):
+            raise ValueError(f"stacking factor must be above 0 and at most 1, not {factor}")
+        saturation = None if self.saturation is None else factor * self.saturation
+        return BHCurve(factor * self.b + (1.0 - factor) * MU0 * self.h, self.h, saturation)
 
     @property
     def linear(self) -> bool:
@@ -270,7 +317,16 @@ class BHCurve:
     ) -> tuple[NDArray[np.float64], NDArray[np.float64]]:
         t = b - self.b[i]
         d, c2, c3 = self._d[i], self._c2[i], self._c3[i]
-        return self.h[i] + t * (d + t * (c2 + t * c3)), d + t * (2.0 * c2 + 3.0 * c3 * t)
+        h = self.h[i] + t * (d + t * (c2 + t * c3))
+        slope = d + t * (2.0 * c2 + 3.0 * c3 * t)
+        if self._length == 0.0:
+            return h, slope
+        beyond = i == self.b.size - 1
+        u = np.where(beyond, t, 0.0) / self._length
+        decay = np.exp(-u)
+        tail_h = self.h[-1] + t / MU0 + self._rise * np.expm1(-u)
+        tail_slope = 1.0 / MU0 - self._rise / self._length * decay
+        return np.where(beyond, tail_h, h), np.where(beyond, tail_slope, slope)
 
     def field_strength(self, b: ArrayLike) -> NDArray[np.float64]:
         """Field strength H in A/m at flux density magnitudes ``b`` in tesla."""
@@ -308,6 +364,9 @@ _UNITS = {
     "resistivity_ohm_m": "ohm metre at 20 C",
     "temperature_coefficient_per_K": "per kelvin",
     "density_kg_m3": "kilogram per cubic metre",
+    "thickness_mm": "millimetre",
+    "saturation_polarisation_T": "tesla",
+    "loss_step_T": "tesla",
     "remanence_temp_coefficient_per_K": "fraction per kelvin, about 20 C",
     "coercivity_temp_coefficient_per_K": "fraction per kelvin, about 20 C",
 }
@@ -441,12 +500,141 @@ def load_material(name: str) -> BHCurve | Magnet | Conductor:
             temperature_coefficient=_number(data, "temperature_coefficient_per_K", name),
             density=_number(data, "density_kg_m3", name),
         )
+    return _steel(data, name)
+
+
+def _steel(data: dict, name: str) -> BHCurve:
+    """The BH curve of a steel entry, from a [B, H] or a [J, H] table."""
+    where = f"material file {name}.yaml"
+    given = [field for field in ("bh_curve", "jh_curve") if field in data]
+    if len(given) != 1:
+        raise ValueError(f"{where}: give one of 'bh_curve' and 'jh_curve'")
+    field = given[0]
+    rows = "[B, H]" if field == "bh_curve" else "[J, H]"
     try:
-        table = np.array(data["bh_curve"], dtype=float)
-    except (KeyError, TypeError, ValueError):
-        raise ValueError(
-            f"material file {name}.yaml: 'bh_curve' must be a list of [B, H] rows"
-        ) from None
+        table = np.array(data[field], dtype=float)
+    except (TypeError, ValueError):
+        table = np.empty(0)
     if table.ndim != 2 or table.shape[1] != 2:
-        raise ValueError(f"material file {name}.yaml: 'bh_curve' must be a list of [B, H] rows")
-    return BHCurve(table[:, 0], table[:, 1])
+        raise ValueError(f"{where}: '{field}' must be a list of {rows} rows")
+    first, h = table[:, 0], table[:, 1]
+    # A datasheet gives polarisation J; the solver needs B = J + mu0 H.
+    b = first + MU0 * h if field == "jh_curve" else first
+    if b.size and b[0] > 0.0 and h[0] > 0.0:
+        # Data usually start above zero; the curve starts at the origin.
+        b, h = np.insert(b, 0, 0.0), np.insert(h, 0, 0.0)
+    saturation = None
+    if "saturation_polarisation_T" in data:
+        saturation = _number(data, "saturation_polarisation_T", name)
+    try:
+        return BHCurve(b, h, saturation)
+    except ValueError as error:
+        raise ValueError(f"{where}: {error}") from None
+
+
+@dataclass(frozen=True)
+class CoreLossCoefficients:
+    """Coefficients of p = kh f B^beta + kc f^2 B^2 + ke f^1.5 B^1.5 in W/kg.
+
+    The three terms are hysteresis, classical eddy current and excess loss
+    (Bertotti), for a sinusoidal flux density of peak B in tesla at f in Hz.
+    """
+
+    hysteresis: float  # kh, W/kg per (Hz T^beta)
+    eddy: float  # kc, W/kg per (Hz T)^2
+    excess: float  # ke, W/kg per (Hz T)^1.5
+    hysteresis_exponent: float = 2.0  # beta
+
+    def loss(self, frequency: ArrayLike, peak: ArrayLike) -> NDArray[np.float64]:
+        """Specific loss in W/kg at ``frequency`` in Hz and peak flux density ``peak`` in T."""
+        f = np.asarray(frequency, dtype=float)
+        b = np.asarray(peak, dtype=float)
+        return (
+            self.hysteresis * f * b**self.hysteresis_exponent
+            + self.eddy * (f * b) ** 2
+            + self.excess * (f * b) ** 1.5
+        )
+
+
+@dataclass(frozen=True)
+class CoreLossData:
+    """Measured specific loss of a steel grade, and the sheet it was measured on.
+
+    ``tables`` maps a frequency in Hz to (peak polarisation in T, loss in W/kg).
+    """
+
+    thickness: float  # m
+    density: float  # kg/m^3
+    resistivity: float  # ohm m
+    tables: dict[float, tuple[NDArray[np.float64], NDArray[np.float64]]]
+
+    def eddy_coefficient(self) -> float:
+        """Classical eddy-current kc = pi^2 d^2 / (6 rho density) for a sheet of thickness d."""
+        return math.pi**2 * self.thickness**2 / (6.0 * self.resistivity * self.density)
+
+    def fit(
+        self,
+        max_frequency: float = 1000.0,
+        min_polarisation: float = 0.3,
+        hysteresis_exponent: float = 2.0,
+    ) -> CoreLossCoefficients:
+        """Fit kh and ke to the tables, with kc from the sheet's thickness and resistivity.
+
+        Least squares on the relative error, with neither coefficient below
+        zero. The tables give loss against peak polarisation J; below 1.8 T
+        J and B differ by less than 1 %, and the fit treats them as equal.
+        """
+        f, b, p = self.points(max_frequency, min_polarisation)
+        if f.size < 2:
+            raise ValueError("too few loss data points in the chosen range to fit")
+        kc = self.eddy_coefficient()
+        basis = np.column_stack([f * b**hysteresis_exponent, (f * b) ** 1.5]) / p[:, None]
+        (kh, ke), _ = nnls(basis, 1.0 - kc * (f * b) ** 2 / p)
+        return CoreLossCoefficients(float(kh), kc, float(ke), hysteresis_exponent)
+
+    def points(
+        self, max_frequency: float = math.inf, min_polarisation: float = 0.0
+    ) -> tuple[NDArray[np.float64], NDArray[np.float64], NDArray[np.float64]]:
+        """Frequency, polarisation and loss of every table point in the range, as flat arrays."""
+        chosen = [(f, j, p) for f, (j, p) in self.tables.items() if f <= max_frequency]
+        f = np.concatenate([np.full(j.size, freq) for freq, j, _ in chosen] or [np.empty(0)])
+        j = np.concatenate([j for _, j, _ in chosen] or [np.empty(0)])
+        p = np.concatenate([p for _, _, p in chosen] or [np.empty(0)])
+        keep = j >= min_polarisation - 1e-12
+        return f[keep], j[keep], p[keep]
+
+
+def load_core_loss(name: str) -> CoreLossData:
+    """The loss tables of a steel in the library, with its thickness, density and resistivity.
+
+    Raises ValueError for a name not in the library, a material that is not
+    a steel, or a steel with no loss data.
+    """
+    data = _read_entry(name)
+    where = f"material file {name}.yaml"
+    if data["kind"] != "steel" or "loss_W_per_kg" not in data:
+        raise ValueError(f"{where}: no loss data ('loss_W_per_kg') for this material")
+    raw = data["loss_W_per_kg"]
+    if not isinstance(raw, dict) or not raw:
+        raise ValueError(f"{where}: 'loss_W_per_kg' must map frequencies in Hz to lists of losses")
+    tables = {}
+    step = _number(data, "loss_step_T", name) if "loss_step_T" in data else 0.1
+    for frequency, losses in raw.items():
+        ok = isinstance(frequency, (int, float)) and not isinstance(frequency, bool)
+        try:
+            loss = np.array(losses, dtype=float)
+        except (TypeError, ValueError):
+            loss = np.empty(0)
+        if not ok or frequency <= 0 or loss.ndim != 1 or loss.size == 0:
+            raise ValueError(f"{where}: 'loss_W_per_kg' must map frequencies in Hz to lists of losses")
+        if not (np.all(np.isfinite(loss)) and np.all(loss > 0.0) and np.all(np.diff(loss) > 0.0)):
+            raise ValueError(
+                f"{where}: losses at {frequency} Hz must be positive and rise with polarisation"
+            )
+        tables[float(frequency)] = (step * np.arange(1, loss.size + 1), loss)
+    return CoreLossData(
+        thickness=_number(data, "thickness_mm", name) * 1e-3,
+        density=_number(data, "density_kg_m3", name),
+        resistivity=_number(data, "resistivity_ohm_m", name),
+        tables=tables,
+    )
