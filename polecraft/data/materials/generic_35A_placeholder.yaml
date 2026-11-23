@@ -15,6 +15,7 @@
 # source.
 name: generic_35A_placeholder
 kind: steel
+source: none; computed from the formula below, not from any datasheet
 description: Placeholder curve from a formula. Not real steel data.
 formula: B = mu0 * H + 2.0 * H / (300 + H)
 # Rows are [B in tesla, H in A/m].

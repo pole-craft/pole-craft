@@ -6,12 +6,14 @@ from pathlib import Path
 
 import numpy as np
 import pytest
+import yaml
 
 from polecraft.core.materials import (
     AIR,
     COPPER,
     MU0,
     BHCurve,
+    Conductor,
     FrohlichSteel,
     LinearMaterial,
     Magnet,
@@ -465,8 +467,68 @@ def test_placeholder_file_says_it_is_not_real_data() -> None:
 
 
 def test_no_real_steel_grade_is_shipped_yet() -> None:
-    names = material_names()
-    assert names == ["generic_35A_placeholder"]
+    steels = [n for n in material_names() if isinstance(load_material(n), BHCurve)]
+    assert steels == ["generic_35A_placeholder"]
+
+
+@pytest.mark.parametrize("name", material_names())
+def test_every_library_entry_loads_with_its_fields(name: str) -> None:
+    data = yaml.safe_load(
+        resources.files("polecraft.data")
+        .joinpath("materials", f"{name}.yaml")
+        .read_text(encoding="utf-8")
+    )
+    assert data["name"] == name
+    assert data["source"].strip() and data["description"].strip()
+    expected = {"steel": BHCurve, "magnet": Magnet, "conductor": Conductor}[data["kind"]]
+    assert isinstance(load_material(name), expected)
+
+
+def test_library_has_each_kind() -> None:
+    kinds = {type(load_material(n)) for n in material_names()}
+    assert kinds == {BHCurve, Magnet, Conductor}
+
+
+def test_magnet_entry_gives_its_remanence_and_permeability() -> None:
+    magnet = load_material("generic_NdFeB_placeholder")
+    assert magnet.remanence == 1.2
+    assert magnet.relative_permeability == 1.05
+
+
+def test_magnet_placeholder_says_it_is_not_a_datasheet_value() -> None:
+    text = resources.files("polecraft.data").joinpath(
+        "materials", "generic_NdFeB_placeholder.yaml"
+    ).read_text(encoding="utf-8")
+    assert "not a datasheet value" in text.lower()
+
+
+def test_copper_resistivity_at_20_c_is_the_annealed_standard() -> None:
+    copper = load_material("copper")
+    assert copper.resistivity == 1.7241e-8
+    assert copper.resistivity_at(20.0) == copper.resistivity
+    assert copper.density == 8960.0
+
+
+def test_copper_resistivity_rises_with_temperature() -> None:
+    copper = load_material("copper")
+    # 100 C is 80 K above 20 C: 1 + 0.00393 * 80 = 1.3144
+    assert copper.resistivity_at(100.0) == pytest.approx(copper.resistivity * 1.3144)
+    assert copper.resistivity_at(0.0) < copper.resistivity
+
+
+@pytest.mark.parametrize(
+    "kwargs",
+    [
+        {"resistivity": 0.0},
+        {"resistivity": float("nan")},
+        {"temperature_coefficient": -0.1},
+        {"density": float("inf")},
+    ],
+)
+def test_conductor_rejects_impossible_values(kwargs: dict) -> None:
+    values = {"resistivity": 1.7e-8, "temperature_coefficient": 0.004, "density": 8960.0}
+    with pytest.raises(ValueError, match="positive number"):
+        Conductor(**{**values, **kwargs})
 
 
 def test_unknown_material_is_rejected_with_the_known_names() -> None:
@@ -480,15 +542,41 @@ def test_material_names_cannot_be_paths(name: str) -> None:
         load_material(name)
 
 
+HEAD = "name: broken\ndescription: x\nsource: y\n"
+MAGNET = HEAD + "kind: magnet\nremanence_T: 1.2\nrelative_permeability: 1.05\n"
+CONDUCTOR = (
+    HEAD
+    + "kind: conductor\nresistivity_ohm_m: 1.7e-8\n"
+    + "temperature_coefficient_per_K: 0.004\ndensity_kg_m3: 8960\n"
+)
+
+
 @pytest.mark.parametrize(
     ("text", "message"),
     [
-        ("kind: magnet\nbh_curve: [[0, 0], [1, 100]]\n", "only 'kind: steel'"),
-        ("- just\n- a list\n", "only 'kind: steel'"),
-        ("kind: steel\n", "'bh_curve' must be a list"),
-        ("kind: steel\nbh_curve: [[0, 0, 0], [1, 100, 5]]\n", "'bh_curve' must be a list"),
-        ("kind: steel\nbh_curve: [[0, 0], [1, x]]\n", "'bh_curve' must be a list"),
-        ("kind: steel\nbh_curve: [[0, 0], [1, 100], [0.9, 200]]\n", "flux density must increase"),
+        ("- just\n- a list\n", "must be a mapping"),
+        (HEAD + "kind: ferrite\n", "'kind' must be one of steel, magnet, conductor"),
+        ("name: other\ndescription: x\nsource: y\nkind: steel\n", "'name' must be 'broken'"),
+        ("name: broken\nsource: y\nkind: steel\n", "'description' must be a non-empty text"),
+        ("name: broken\ndescription: x\nkind: steel\n", "'source' must be a non-empty text"),
+        ("name: broken\ndescription: x\nsource: ' '\nkind: steel\n", "'source' must be"),
+        (HEAD + "kind: steel\n", "'bh_curve' must be a list"),
+        (HEAD + "kind: steel\nbh_curve: [[0, 0, 0], [1, 100, 5]]\n", "'bh_curve' must be a list"),
+        (HEAD + "kind: steel\nbh_curve: [[0, 0], [1, x]]\n", "'bh_curve' must be a list"),
+        (
+            HEAD + "kind: steel\nbh_curve: [[0, 0], [1, 100], [0.9, 200]]\n",
+            "flux density must increase",
+        ),
+        (MAGNET.replace("remanence_T: 1.2\n", ""), "'remanence_T' \\(tesla\\) must be"),
+        (MAGNET.replace("1.2", "-1.2"), "'remanence_T' \\(tesla\\) must be zero or more"),
+        (MAGNET.replace("1.05", "zero"), "'relative_permeability'"),
+        (MAGNET.replace("1.2", "true"), "'remanence_T'"),
+        (CONDUCTOR.replace("1.7e-8", "0"), "'resistivity_ohm_m' \\(ohm metre at 20 C\\)"),
+        (CONDUCTOR.replace("8960", ".nan"), "'density_kg_m3'"),
+        (
+            CONDUCTOR.replace("temperature_coefficient_per_K: 0.004\n", ""),
+            "'temperature_coefficient_per_K'",
+        ),
     ],
 )
 def test_a_bad_material_file_is_rejected(

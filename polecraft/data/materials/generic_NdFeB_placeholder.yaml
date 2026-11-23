@@ -1,0 +1,13 @@
+# PLACEHOLDER. THIS IS NOT A DATASHEET VALUE.
+#
+# The remanence and recoil permeability are the stand-in numbers that
+# `polecraft solve` has used so far. They are in the right range for a
+# sintered NdFeB grade at 20 C but do not describe any grade or maker. Real
+# grades, with their temperature behaviour, are added from supplier
+# datasheets in the next steps.
+name: generic_NdFeB_placeholder
+kind: magnet
+description: Placeholder sintered NdFeB magnet. Not a datasheet value.
+source: none; stand-in numbers, not from any datasheet
+remanence_T: 1.2
+relative_permeability: 1.05

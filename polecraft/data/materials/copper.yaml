@@ -1,0 +1,7 @@
+name: copper
+kind: conductor
+description: Annealed copper winding wire.
+source: International Annealed Copper Standard (IEC 60028), 20 C. Standard values for pure annealed copper; enamelled wire from a maker may differ slightly.
+resistivity_ohm_m: 1.7241e-8
+temperature_coefficient_per_K: 0.00393
+density_kg_m3: 8960

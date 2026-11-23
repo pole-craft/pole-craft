@@ -92,8 +92,8 @@ works with regions, materials, coils and magnets only.
   again, and stepping through rotor angles with warm starts.
 - `polecraft/core/materials.py`: reluctivity against flux density, from a
   BH table or a formula, and magnets. Material files are in
-  `polecraft/data/materials/`. The one there now is a placeholder made from
-  a formula, not data for a real steel.
+  `polecraft/data/materials/`, one per steel, magnet or conductor;
+  there is no real steel data yet.
 - `polecraft/core/problem.py`: the `Problem` the solver is given. It can be
   built for a machine, or by hand from arrays, which is how the solver is
   tested. It also says where the windings and the air gap are, for the

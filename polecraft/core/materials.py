@@ -242,6 +242,35 @@ class BHCurve:
         return np.where(first, self._d[0] + b * (self._c2[0] + b * self._c3[0]), rest)
 
 
+_KINDS = ("steel", "magnet", "conductor")
+_UNITS = {
+    "remanence_T": "tesla",
+    "relative_permeability": "relative to mu0",
+    "resistivity_ohm_m": "ohm metre at 20 C",
+    "temperature_coefficient_per_K": "per kelvin",
+    "density_kg_m3": "kilogram per cubic metre",
+}
+
+
+@dataclass(frozen=True)
+class Conductor:
+    """A winding conductor: resistivity at 20 C, how it rises with temperature, density."""
+
+    resistivity: float  # ohm metre at 20 C
+    temperature_coefficient: float  # per kelvin, linear about 20 C
+    density: float  # kg/m^3
+
+    def __post_init__(self) -> None:
+        for name in ("resistivity", "temperature_coefficient", "density"):
+            value = getattr(self, name)
+            if not (math.isfinite(value) and value > 0.0):
+                raise ValueError(f"{name} must be a positive number, not {value}")
+
+    def resistivity_at(self, temperature: float) -> float:
+        """Resistivity in ohm metres at ``temperature`` in degrees Celsius."""
+        return self.resistivity * (1.0 + self.temperature_coefficient * (temperature - 20.0))
+
+
 def _check_table(b: NDArray[np.float64], h: NDArray[np.float64]) -> None:
     """Raise ValueError if the table cannot describe a BH curve."""
     if b.ndim != 1 or h.ndim != 1:
@@ -274,19 +303,58 @@ def material_names() -> list[str]:
     )
 
 
-def load_material(name: str) -> BHCurve:
-    """Load a material from the library by name.
-
-    Only steels given by a BH table are in the library so far. Raises
-    ValueError for a name that is not there.
-    """
+def _read_entry(name: str) -> dict:
+    """Read and check the fields every library file has."""
     names = material_names()
     if name not in names:
         raise ValueError(f"unknown material '{name}'; the library has: {', '.join(names)}")
     entry = resources.files("polecraft.data").joinpath("materials", f"{name}.yaml")
     data = yaml.safe_load(entry.read_text(encoding="utf-8"))
-    if not isinstance(data, dict) or data.get("kind") != "steel":
-        raise ValueError(f"material file {name}.yaml: only 'kind: steel' is supported so far")
+    where = f"material file {name}.yaml"
+    if not isinstance(data, dict):
+        raise ValueError(f"{where}: must be a mapping of fields")
+    kind = data.get("kind")
+    if kind not in _KINDS:
+        raise ValueError(f"{where}: 'kind' must be one of {', '.join(_KINDS)}, not {kind!r}")
+    if data.get("name") != name:
+        raise ValueError(f"{where}: 'name' must be '{name}', not {data.get('name')!r}")
+    for field in ("description", "source"):
+        if not isinstance(data.get(field), str) or not data[field].strip():
+            raise ValueError(f"{where}: '{field}' must be a non-empty text")
+    return data
+
+
+def _number(data: dict, field: str, name: str, *, positive: bool = True) -> float:
+    """A finite number field, positive unless ``positive`` is False (then zero or more)."""
+    value = data.get(field)
+    ok = isinstance(value, (int, float)) and not isinstance(value, bool) and math.isfinite(value)
+    if not ok or (value <= 0.0 if positive else value < 0.0):
+        unit = f" ({_UNITS[field]})" if field in _UNITS else ""
+        need = "a positive number" if positive else "zero or more"
+        raise ValueError(f"material file {name}.yaml: '{field}'{unit} must be {need}, not {value!r}")
+    return float(value)
+
+
+def load_material(name: str) -> BHCurve | Magnet | Conductor:
+    """Load a material from the library by name.
+
+    Returns a ``BHCurve`` for a steel, a ``Magnet`` for a magnet grade and a
+    ``Conductor`` for a conductor. Raises ValueError for a name that is not
+    in the library or a file with a missing or impossible field.
+    """
+    data = _read_entry(name)
+    kind = data["kind"]
+    if kind == "magnet":
+        return Magnet(
+            remanence=_number(data, "remanence_T", name, positive=False),
+            relative_permeability=_number(data, "relative_permeability", name),
+        )
+    if kind == "conductor":
+        return Conductor(
+            resistivity=_number(data, "resistivity_ohm_m", name),
+            temperature_coefficient=_number(data, "temperature_coefficient_per_K", name),
+            density=_number(data, "density_kg_m3", name),
+        )
     try:
         table = np.array(data["bh_curve"], dtype=float)
     except (KeyError, TypeError, ValueError):
