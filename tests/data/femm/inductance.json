@@ -1,0 +1,331 @@
+{
+ "what": "FEMM phase flux linkages at rotor angle 0 with d- and q-axis currents, to check the inductance study against. Placeholder steel curve and magnet, not real grades.",
+ "made_by": "tests/data/femm/make_inductance.py",
+ "made_on": "2026-11-23",
+ "femm": "FEMM 4.2, file of 2019-04-21",
+ "design": "designs/qdd_outer_36s42p.yaml",
+ "design_values": {
+  "format_version": 1,
+  "type": "qdd_outer",
+  "slots": 36,
+  "poles": 42,
+  "geometry": {
+   "air_gap_mm": 0.6,
+   "rotor": {
+    "outer_diameter_mm": 90.0,
+    "yoke_thickness_mm": 2.5
+   },
+   "magnet": {
+    "thickness_mm": 2.5,
+    "arc_fraction": 0.85,
+    "magnetisation": "parallel"
+   },
+   "stator": {
+    "tooth_width_mm": 3.0,
+    "slot_opening_mm": 1.5,
+    "tooth_tip_height_mm": 0.6,
+    "tooth_tip_taper_mm": 0.6,
+    "slot_depth_mm": 9.0,
+    "yoke_thickness_mm": 3.2
+   }
+  },
+  "axial": {
+   "stack_length_mm": 12.0,
+   "magnet_overhang_mm": 0.0,
+   "skew_deg": 0.0,
+   "end_winding_overhang_mm": null
+  },
+  "magnet": {
+   "material": "N42SH",
+   "temperature_C": 80.0
+  },
+  "winding": {
+   "wire_diameter_mm": 0.5,
+   "insulated_diameter_mm": null,
+   "turns_per_coil": 20,
+   "parallel_strands": 1,
+   "conductor": "copper",
+   "connection": "star",
+   "temperature_C": 100.0
+  },
+  "steel": {
+   "stator": "M270-35A",
+   "rotor": "M270-35A",
+   "stacking_factor": 0.95
+  }
+ },
+ "steel": {
+  "name": "generic_35A_placeholder",
+  "bh_curve": [
+   [
+    0.0,
+    0.0
+   ],
+   [
+    0.153878,
+    25.0
+   ],
+   [
+    0.285777,
+    50.0
+   ],
+   [
+    0.400094,
+    75.0
+   ],
+   [
+    0.500126,
+    100.0
+   ],
+   [
+    0.666855,
+    150.0
+   ],
+   [
+    0.800251,
+    200.0
+   ],
+   [
+    1.000377,
+    300.0
+   ],
+   [
+    1.14336,
+    400.0
+   ],
+   [
+    1.334087,
+    600.0
+   ],
+   [
+    1.455551,
+    800.0
+   ],
+   [
+    1.539718,
+    1000.0
+   ],
+   [
+    1.668552,
+    1500.0
+   ],
+   [
+    1.741644,
+    2000.0
+   ],
+   [
+    1.821952,
+    3000.0
+   ],
+   [
+    1.893076,
+    5000.0
+   ],
+   [
+    1.932502,
+    7500.0
+   ],
+   [
+    1.954314,
+    10000.0
+   ],
+   [
+    1.979634,
+    15000.0
+   ],
+   [
+    1.995576,
+    20000.0
+   ],
+   [
+    2.017897,
+    30000.0
+   ],
+   [
+    2.050903,
+    50000.0
+   ],
+   [
+    2.119682,
+    100000.0
+   ],
+   [
+    2.248332,
+    200000.0
+   ],
+   [
+    2.374993,
+    300000.0
+   ]
+  ]
+ },
+ "magnet": {
+  "remanence": 1.2,
+  "relative_permeability": 1.05
+ },
+ "rotor_angle": 0.0,
+ "runs": {
+  "normal": {
+   "fineness": 1.0,
+   "cases": {
+    "none": {
+     "current": 0.0,
+     "advance": 0.0,
+     "phase_currents": {
+      "A": -0.0,
+      "B": 0.0,
+      "C": -0.0
+     },
+     "torque": -0.000148175597102,
+     "flux_linkage": {
+      "A": 0.0100004630327,
+      "B": -0.00248567982607,
+      "C": -0.00705376893307
+     }
+    },
+    "d_10": {
+     "current": 10.0,
+     "advance": 1.5707963267948966,
+     "phase_currents": {
+      "A": -9.659258262890685,
+      "B": 2.5881904510252096,
+      "C": 7.0710678118654755
+     },
+     "torque": 0.00503060481654,
+     "flux_linkage": {
+      "A": 0.00388062920461,
+      "B": -0.00084066455936,
+      "C": -0.00256645438167
+     }
+    },
+    "d_40": {
+     "current": 40.0,
+     "advance": 1.5707963267948966,
+     "phase_currents": {
+      "A": -38.63703305156274,
+      "B": 10.352761804100838,
+      "C": 28.284271247461902
+     },
+     "torque": -0.0481191250067,
+     "flux_linkage": {
+      "A": -0.0126516290401,
+      "B": 0.00386141163393,
+      "C": 0.00986005545101
+     }
+    },
+    "d_aiding_10": {
+     "current": 10.0,
+     "advance": -1.5707963267948966,
+     "phase_currents": {
+      "A": 9.659258262890683,
+      "B": -2.5881904510252065,
+      "C": -7.071067811865477
+     },
+     "torque": 0.00154456691682,
+     "flux_linkage": {
+      "A": 0.0151576689785,
+      "B": -0.00407091994301,
+      "C": -0.0111704048025
+     }
+    },
+    "q_10": {
+     "current": 10.0,
+     "advance": 0.0,
+     "phase_currents": {
+      "A": -2.5881904510252065,
+      "B": 9.659258262890683,
+      "C": -7.071067811865475
+     },
+     "torque": 3.18865848527,
+     "flux_linkage": {
+      "A": 0.0083516004521,
+      "B": 0.00354264254315,
+      "C": -0.0113649501727
+     }
+    }
+   },
+   "nodes": 70246
+  },
+  "fine": {
+   "fineness": 2.0,
+   "cases": {
+    "none": {
+     "current": 0.0,
+     "advance": 0.0,
+     "phase_currents": {
+      "A": -0.0,
+      "B": 0.0,
+      "C": -0.0
+     },
+     "torque": -0.000115195665466,
+     "flux_linkage": {
+      "A": 0.0100046860173,
+      "B": -0.00248593803183,
+      "C": -0.00705235221508
+     }
+    },
+    "d_10": {
+     "current": 10.0,
+     "advance": 1.5707963267948966,
+     "phase_currents": {
+      "A": -9.659258262890685,
+      "B": 2.5881904510252096,
+      "C": 7.0710678118654755
+     },
+     "torque": 0.0046341159563,
+     "flux_linkage": {
+      "A": 0.00387007592745,
+      "B": -0.000842614072676,
+      "C": -0.00256115932607
+     }
+    },
+    "d_40": {
+     "current": 40.0,
+     "advance": 1.5707963267948966,
+     "phase_currents": {
+      "A": -38.63703305156274,
+      "B": 10.352761804100838,
+      "C": 28.284271247461902
+     },
+     "torque": -0.0482569851321,
+     "flux_linkage": {
+      "A": -0.0127069119789,
+      "B": 0.00387007390212,
+      "C": 0.00988817742612
+     }
+    },
+    "d_aiding_10": {
+     "current": 10.0,
+     "advance": -1.5707963267948966,
+     "phase_currents": {
+      "A": 9.659258262890683,
+      "B": -2.5881904510252065,
+      "C": -7.071067811865477
+     },
+     "torque": 0.0013832089375,
+     "flux_linkage": {
+      "A": 0.0151832661037,
+      "B": -0.00407419339686,
+      "C": -0.0111809780948
+     }
+    },
+    "q_10": {
+     "current": 10.0,
+     "advance": 0.0,
+     "phase_currents": {
+      "A": -2.5881904510252065,
+      "B": 9.659258262890683,
+      "C": -7.071067811865475
+     },
+     "torque": 3.19087879862,
+     "flux_linkage": {
+      "A": 0.00835411886974,
+      "B": 0.00354629141089,
+      "C": -0.011374137172
+     }
+    }
+   },
+   "nodes": 229310
+  }
+ }
+}

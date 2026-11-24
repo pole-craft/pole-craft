@@ -12,8 +12,12 @@ from polecraft.core.winding import (
     MAX_PACKING,
     Coil,
     CoilShape,
+    EndTurns,
     PhaseWinding,
     Symmetry,
+    end_turn_inductance,
+    end_winding_inductance,
+    loop_inductance,
     mean_turn_length,
     phase_winding,
     slot_fill,
@@ -488,3 +492,120 @@ def test_winding_needs_a_conductor_from_the_library(repo_root) -> None:
         )
         with pytest.raises(ValueError, match=message):
             phase_winding(machine_for(changed))
+
+
+# Inductance of the end turns
+
+MU0 = 4e-7 * math.pi
+TOOTH_COIL = CoilShape(tooth_width=3.0 * MM, thickness=1.44 * MM, side_area=12.96 * MM**2)
+
+
+def ring_of_round_wire(radius: float, wire: float, cells: int) -> tuple[list, float]:
+    """Filaments filling a round wire bent into a ring, and the side of their cells."""
+    cell = 2.0 * wire / cells
+    angle = np.linspace(0.0, 2.0 * math.pi, 241)[:-1]
+    loops = []
+    for i in range(cells):
+        for j in range(cells):
+            u, v = -wire + (i + 0.5) * cell, -wire + (j + 0.5) * cell
+            if u * u + v * v > wire * wire:
+                continue
+            points = np.column_stack(
+                [(radius + u) * np.cos(angle), (radius + u) * np.sin(angle), np.full(angle.size, v)]
+            )
+            loops.append((points, np.roll(points, -1, axis=0)))
+    return loops, cell
+
+
+def test_loop_inductance_of_a_ring_matches_the_textbook_formula() -> None:
+    # A ring of radius R in round wire of radius a, current spread evenly:
+    # L = mu0 R (ln(8 R / a) - 7/4).
+    radius, wire = 10.0 * MM, 1.0 * MM
+    loops, cell = ring_of_round_wire(radius, wire, 8)
+    exact = MU0 * radius * (math.log(8.0 * radius / wire) - 1.75)
+    assert loop_inductance(loops, cell) == pytest.approx(exact, rel=0.03)
+
+
+def test_loop_inductance_needs_loops_and_a_cell() -> None:
+    loops, cell = ring_of_round_wire(10.0 * MM, 1.0 * MM, 2)
+    with pytest.raises(ValueError, match="at least one loop"):
+        loop_inductance([], cell)
+    with pytest.raises(ValueError, match="cell"):
+        loop_inductance(loops, 0.0)
+
+
+def test_end_turn_part_settles_as_the_stack_grows() -> None:
+    # The 2D part grows with the stack; what is left is the ends. The two
+    # ends of a coil carry opposite currents across the tooth and take a
+    # little from each other, less the further apart they are (as 1 / L),
+    # so the change halves with each doubling of the stack.
+    air = [end_turn_inductance(TOOTH_COIL, length * MM).air for length in (24.0, 48.0, 96.0, 192.0)]
+    changes = np.diff(air)
+    assert np.all(changes > 0.0)
+    assert changes[1:] / changes[:-1] == pytest.approx([0.5, 0.5], abs=0.1)
+    assert air[3] == pytest.approx(air[2], rel=0.02)
+    # The end-face term does not see the stack length at all.
+    faces = [end_turn_inductance(TOOTH_COIL, length * MM).face for length in (12.0, 48.0)]
+    assert faces[1] == pytest.approx(faces[0], rel=1e-9)
+
+
+def test_end_turn_inductance_settles_with_more_filaments() -> None:
+    coarse = end_turn_inductance(TOOTH_COIL, 12.0 * MM, grid=(4, 12))
+    fine = end_turn_inductance(TOOTH_COIL, 12.0 * MM, grid=(6, 18))
+    assert fine.air == pytest.approx(coarse.air, rel=0.02)
+    assert fine.face == pytest.approx(coarse.face, rel=0.02)
+
+
+def test_end_turns_of_the_reference_coil() -> None:
+    ends = end_turn_inductance(TOOTH_COIL, 12.0 * MM)
+    assert ends.air > 0.0 and ends.face > 0.0
+    assert ends.estimate == ends.air + 0.5 * ends.face and ends.spread == 0.5 * ends.face
+    # About a nanohenry per turn squared: 20 turns on each of 12 coils give
+    # some microhenries a phase, against 0.6 mH from the 2D model.
+    assert 0.5e-9 < ends.estimate < 2e-9
+
+
+def test_default_overhang_is_the_coil_thickness() -> None:
+    given = end_turn_inductance(TOOTH_COIL, 12.0 * MM, TOOTH_COIL.thickness)
+    assert end_turn_inductance(TOOTH_COIL, 12.0 * MM) == given
+
+
+def test_end_turns_that_stand_out_further_add_more() -> None:
+    near = end_turn_inductance(TOOTH_COIL, 12.0 * MM, 1.0 * MM)
+    far = end_turn_inductance(TOOTH_COIL, 12.0 * MM, 4.0 * MM)
+    assert far.air > near.air
+
+
+@pytest.mark.parametrize(
+    ("stack", "overhang", "grid", "message"),
+    [
+        (0.0, None, (4, 12), "stack length"),
+        (12.0 * MM, -1.0 * MM, (4, 12), "end overhang"),
+        (math.nan, None, (4, 12), "stack length"),
+        (12.0 * MM, None, (0, 12), "grid"),
+    ],
+)
+def test_end_turn_inputs_are_checked(stack, overhang, grid, message) -> None:
+    with pytest.raises(ValueError, match=message):
+        end_turn_inductance(TOOTH_COIL, stack, overhang, grid)
+
+
+def test_phase_end_winding_scales_with_coils_and_turns_squared(repo_root) -> None:
+    from polecraft.design import design_from_dict, design_to_dict, load_design
+    from polecraft.machines import machine_for
+
+    design = load_design(repo_root / "designs" / "qdd_outer_36s42p.yaml")
+    machine = machine_for(design)
+    shape = machine.coil_shape()
+    one = end_turn_inductance(shape, 12.0 * MM)
+    phase = end_winding_inductance(machine)
+    # 12 coils of 20 turns in series.
+    assert phase.estimate == pytest.approx(12 * 20**2 * one.estimate, rel=1e-12)
+    assert phase.spread == pytest.approx(12 * 20**2 * one.spread, rel=1e-12)
+    data = design_to_dict(design)
+    data["winding"]["turns_per_coil"] = 10
+    data["axial"]["end_winding_overhang_mm"] = 3.0
+    other = end_winding_inductance(machine_for(design_from_dict(data)))
+    expected = end_turn_inductance(shape, 12.0 * MM, 3.0 * MM)
+    assert other.air == pytest.approx(12 * 10**2 * expected.air, rel=1e-12)
+    assert isinstance(one, EndTurns)

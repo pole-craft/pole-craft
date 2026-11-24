@@ -2,9 +2,9 @@
 
 Covers three-phase concentrated (tooth-wound) windings with a coil on every
 tooth, the usual choice for QDD motors. The layout needs only slot and pole
-counts. The electrical part (wire, slot fill, turn length, resistance) needs
-the size of a coil, which a machine gives as a ``CoilShape``; nothing here
-depends on the machine type.
+counts. The electrical part (wire, slot fill, turn length, resistance, the
+inductance of the end turns) needs the size of a coil, which a machine gives
+as a ``CoilShape``; nothing here depends on the machine type.
 
 Teeth are numbered from 0, counter-clockwise, with tooth 0 on the reference
 axis. A tooth at mechanical angle ``a`` sits at electrical angle ``p * a``,
@@ -19,7 +19,10 @@ from cmath import phase as angle_of
 from dataclasses import dataclass
 from math import gcd, pi, sin
 from operator import index
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Sequence
+
+import numpy as np
+from numpy.typing import NDArray
 
 if TYPE_CHECKING:
     from polecraft.core.materials import Conductor
@@ -408,4 +411,321 @@ def phase_winding(machine: Machine, conductor: Conductor | None = None) -> Phase
             winding.wire_diameter_mm * mm,
             None if insulated is None else insulated * mm,
         ),
+    )
+
+
+# Inductance of the end turns. The 2D field model has no ends: it gives the
+# inductance of the coil sides per metre of stack, as if they were infinitely
+# long. The end turns add flux that it cannot see. That part is estimated in
+# air, as the inductance of the real 3D coil less the 2D value of the same
+# coil sides over the stack length ("3D less 2D"), plus part of what the iron
+# end face of the stator adds by acting as a magnetic mirror.
+
+# The classical value, as in materials.MU0; not imported from there because
+# that module loads SciPy, which loading a design file does not need.
+MU0 = 4e-7 * math.pi
+
+# Geometric mean distance of a square cross-section from itself, as a
+# fraction of its side: the distance at which a thin filament has the same
+# self-inductance as the square conductor it stands for.
+SQUARE_GMD = 0.44705
+
+
+def _neumann(
+    middles: NDArray[np.float64],
+    steps: NDArray[np.float64],
+    other_middles: NDArray[np.float64],
+    other_steps: NDArray[np.float64],
+    nearest: float = 0.0,
+) -> float:
+    """Sum over all pairs of segments of (step . other step) / distance, by the midpoint rule.
+
+    Distances under ``nearest`` are raised to it. Times mu0 / (4 pi) this is
+    Neumann's mutual inductance of the two sets of segments, in H.
+    """
+    distance = np.linalg.norm(middles[:, None, :] - other_middles[None, :, :], axis=2)
+    return float(np.sum((steps @ other_steps.T) / np.maximum(distance, nearest)))
+
+
+def loop_inductance(
+    loops: Sequence[tuple[NDArray[np.float64], NDArray[np.float64]]], cell: float
+) -> float:
+    """Inductance of a bundle of closed filaments that share one current equally, in H.
+
+    Each loop is a pair of arrays (start points, end points) of its straight
+    segments, shape (n, 3), in metres. The result is the mean of the mutual
+    inductances of every pair of loops (Neumann's formula, by the midpoint
+    rule): the inductance of one turn of a conductor whose cross-section the
+    filaments share out, so a coil of N such turns has N^2 times it. Within a
+    loop, distances are not allowed below the geometric mean distance of a
+    square of side ``cell`` (the cross-section each filament stands for),
+    which stands in for the conductor's own size. Segments must be short
+    against the distance between neighbouring filaments.
+    """
+    if not loops:
+        raise ValueError("at least one loop is needed")
+    if not (math.isfinite(cell) and cell > 0.0):
+        raise ValueError(f"cell must be a positive length in metres, not {cell}")
+    middles = [0.5 * (a + b) for a, b in loops]
+    steps = [b - a for a, b in loops]
+    all_middles, all_steps = np.concatenate(middles), np.concatenate(steps)
+    owner = np.concatenate([np.full(len(m), k) for k, m in enumerate(middles)])
+    nearest = SQUARE_GMD * cell
+    total = 0.0
+    for k, (middle, step) in enumerate(zip(middles, steps)):
+        total += _neumann(middle, step, middle, step, nearest)
+        rest = owner != k
+        total += _neumann(middle, step, all_middles[rest], all_steps[rest])
+    return MU0 / (4.0 * math.pi) * total / len(loops) ** 2
+
+
+def _parallel_mutual(length: float, distance: NDArray[np.float64]) -> NDArray[np.float64]:
+    """Mutual inductance of two parallel straight filaments side by side, both ``length`` long, in H.
+
+    The exact result of Neumann's formula: mu0 / (2 pi) (l asinh(l / d) -
+    sqrt(l^2 + d^2) + d) for filaments a distance d apart.
+    """
+    return (
+        MU0
+        / (2.0 * math.pi)
+        * (length * np.arcsinh(length / distance) - np.hypot(length, distance) + distance)
+    )
+
+
+def _graded(length: float, first: float, growth: float = 1.15) -> NDArray[np.float64]:
+    """Points from 0 to ``length``, ``first`` apart at both ends and further apart in between."""
+    half = [0.0]
+    step = first
+    while half[-1] + step < 0.5 * length:
+        half.append(half[-1] + step)
+        step *= growth
+    half_array = np.array(half)
+    return np.concatenate([half_array, [0.5 * length], length - half_array[::-1]])
+
+
+def _end_path(
+    half_width: float, half_length: float, offset: float, reach: float, height: float, step: float
+) -> tuple[NDArray[np.float64], NDArray[np.float64]]:
+    """Segments (starts, ends) of a filament's two end turns: corners and the run across the tooth.
+
+    Corners are quarter ellipses, ``offset`` sideways and ``reach`` along the
+    stack; the run across the tooth is ``reach`` beyond the stack's end.
+    """
+    def count(length: float) -> int:
+        return max(4, math.ceil(length / step))
+
+    arcs = count(0.25 * math.pi * (offset + reach))
+    across = count(2.0 * half_width)
+    starts, ends = [], []
+    for sign in (1.0, -1.0):
+        # Corner from the side at x = +(w/2 + s), across, corner down to the other side.
+        angle = (np.arange(arcs + 1) / arcs) * 0.5 * math.pi
+        first = np.column_stack(
+            [half_width + offset * np.cos(angle), np.full(arcs + 1, height),
+             sign * (half_length + reach * np.sin(angle))]
+        )
+        run = np.linspace(half_width, -half_width, across + 1)
+        middle = np.column_stack(
+            [run, np.full(across + 1, height), np.full(across + 1, sign * (half_length + reach))]
+        )
+        second = np.column_stack(
+            [-half_width - offset * np.sin(angle), np.full(arcs + 1, height),
+             sign * (half_length + reach * np.cos(angle))]
+        )
+        path = np.concatenate([first, middle[1:], second[1:]])
+        if sign < 0.0:
+            path = path[::-1]  # the far end is run through the other way round
+        starts.append(path[:-1])
+        ends.append(path[1:])
+    return np.concatenate(starts), np.concatenate(ends)
+
+
+@dataclass(frozen=True)
+class EndTurns:
+    """Inductance the end turns of one tooth coil add, per turn squared, in H.
+
+    ``air`` is the 3D coil in air less the 2D value of its sides over the
+    stack length. ``face`` is what an ideal iron end face (a magnetic mirror)
+    would add to that. The estimate takes half the face term, since the end
+    turns lie partly over the tooth's end face and partly over the slots, and
+    the spread covers both extremes.
+    """
+
+    air: float
+    face: float
+
+    @property
+    def estimate(self) -> float:
+        """Air value plus half the end-face term, H per turn squared."""
+        return self.air + 0.5 * self.face
+
+    @property
+    def spread(self) -> float:
+        """Half the end-face term: the estimate is this much from either extreme, H."""
+        return 0.5 * self.face
+
+
+def end_turn_inductance(
+    shape: CoilShape,
+    stack_length: float,
+    end_overhang: float | None = None,
+    grid: tuple[int, int] = (4, 12),
+) -> EndTurns:
+    """Inductance the end turns of one tooth coil add to its 2D value, per turn squared.
+
+    The coil is straightened (the tooth's curvature is left out) and its
+    cross-section, ``shape.thickness`` across the slot by side_area /
+    thickness along the tooth, is shared out among grid[0] x grid[1]
+    filaments; grids coarser than the default give values too high (by about
+    10 % at (2, 3)), and finer ones change it by under 1 %. The corners are
+    quarter ellipses, and the ends stand out from the stack by
+    ``end_overhang`` per end (the coil thickness if not given), as in
+    ``mean_turn_length``. The straight sides are coupled by the exact
+    formula for parallel filaments, everything else by Neumann's formula on
+    short segments.
+
+    Left out: coupling between the end turns of neighbouring coils, the
+    slots in the end face, saturation, and the fringing of the field at the
+    ends of the stack and the magnets. The result is an estimate, good to
+    perhaps 40 %; no 3D field check of it is possible here. For a short coil
+    with tall, narrow sides it is a few percent of the 2D inductance. The
+    simpler formula of a semicircular end turn in air (Hanselman, Brushless
+    Permanent Magnet Motor Design, 2nd ed., eq. 4.29) does not apply to such
+    coils: its logarithm's argument comes out near 1.
+    """
+    if end_overhang is None:
+        end_overhang = shape.thickness
+    for name, value in (
+        ("stack length", stack_length),
+        ("end overhang", end_overhang),
+        ("coil thickness", shape.thickness),
+        ("coil side area", shape.side_area),
+        ("tooth width", shape.tooth_width),
+    ):
+        if not (math.isfinite(value) and value > 0.0):
+            raise ValueError(f"{name} must be a positive length, not {value}")
+    across, along = grid
+    if across < 1 or along < 1:
+        raise ValueError(f"grid must have at least one filament each way, not {grid}")
+    depth = shape.side_area / shape.thickness
+    offsets = (np.arange(across) + 0.5) / across * shape.thickness
+    heights = (np.arange(along) + 0.5) / along * depth
+    cell = math.sqrt(shape.thickness / across * depth / along)
+    nearest = SQUARE_GMD * cell
+    # Segments short against the distance between neighbouring filaments,
+    # which the midpoint rule needs to judge their coupling.
+    step = 0.5 * min(shape.thickness / across, depth / along)
+    half_width, half_length = shape.tooth_width / 2.0, stack_length / 2.0
+
+    # Filament k is at x = +-(w/2 + offset) on its sides, at height y.
+    x = np.repeat(half_width + offsets, along)
+    y = np.tile(heights, across)
+    count = x.size
+    reach = np.repeat(offsets * end_overhang / shape.thickness, along)
+
+    # Sides against sides, exactly. The side at +x runs towards +z and the
+    # one at -x back towards -z, so the two sides of different filaments
+    # oppose each other and the two like sides add.
+    same = np.hypot(x[:, None] - x[None, :], y[:, None] - y[None, :])
+    np.fill_diagonal(same, nearest)
+    cross = np.hypot(x[:, None] + x[None, :], y[:, None] - y[None, :])
+    sides = 2.0 * float(np.sum(_parallel_mutual(stack_length, same)
+                               - _parallel_mutual(stack_length, cross)))
+
+    # Sides as segments, finer near the ends of the stack where the end
+    # turns are, for their coupling with the end turns.
+    z = _graded(stack_length, step) - half_length
+    side_middles, side_steps, end_middles, end_steps, owner_side, owner_end = [], [], [], [], [], []
+    for k in range(count):
+        middle_z = 0.5 * (z[:-1] + z[1:])
+        length = np.diff(z)
+        for sign in (1.0, -1.0):
+            side_middles.append(np.column_stack(
+                [np.full(middle_z.size, sign * x[k]), np.full(middle_z.size, y[k]), sign * middle_z]))
+            side_steps.append(np.column_stack(
+                [np.zeros(length.size), np.zeros(length.size), sign * length]))
+            owner_side.append(np.full(length.size, k))
+        a, b = _end_path(half_width, half_length, float(offsets[k // along]), float(reach[k]),
+                         float(y[k]), step)
+        end_middles.append(0.5 * (a + b))
+        end_steps.append(b - a)
+        owner_end.append(np.full(len(a), k))
+    all_ends_middle = np.concatenate(end_middles)
+    all_ends_step = np.concatenate(end_steps)
+    end_owner = np.concatenate(owner_end)
+    side_middle = np.concatenate(side_middles)
+    side_step = np.concatenate(side_steps)
+    side_owner = np.concatenate(owner_side)
+
+    others = 0.0
+    for k in range(count):
+        mine = side_owner == k
+        # Each side segment with every end segment, counted both ways round;
+        # only a filament's own segments meet closer than its cell.
+        for theirs, closest in ((end_owner == k, nearest), (end_owner != k, 0.0)):
+            others += 2.0 * _neumann(
+                side_middle[mine], side_step[mine],
+                all_ends_middle[theirs], all_ends_step[theirs], closest,
+            )
+        others += _neumann(end_middles[k], end_steps[k], end_middles[k], end_steps[k], nearest)
+        rest = end_owner != k
+        others += _neumann(end_middles[k], end_steps[k], all_ends_middle[rest], all_ends_step[rest])
+    total = (sides + MU0 / (4.0 * math.pi) * others) / count**2
+
+    # The 2D value of the same coil sides: a two-wire line with its outward
+    # side at x = w/2 + s and its return side at -(w/2 + s).
+    per_metre = MU0 / math.pi * float(np.mean(np.log(cross / same)))
+
+    # The end face at z = +-L/2 as an ideal magnetic mirror: the image of a
+    # current keeps its components along the face and reverses the one
+    # across it, which is what reflecting the points does.
+    face = 0.0
+    for sign in (1.0, -1.0):
+        plane = sign * half_length
+        at_this_end = sign * all_ends_middle[:, 2] > half_length
+        image_middle = all_ends_middle[at_this_end].copy()
+        image_middle[:, 2] = 2.0 * plane - image_middle[:, 2]
+        image_step = all_ends_step[at_this_end] * np.array([1.0, 1.0, -1.0])
+        face += _neumann(all_ends_middle[at_this_end], all_ends_step[at_this_end],
+                         image_middle, image_step, nearest)
+    face *= MU0 / (4.0 * math.pi) / count**2
+    return EndTurns(air=total - per_metre * stack_length, face=face)
+
+
+@dataclass(frozen=True)
+class EndWinding:
+    """End-turn inductance of one phase, all its coils in series, in H."""
+
+    estimate: float
+    spread: float  # the estimate is uncertain by at least this much either way
+    air: float  # in air alone, the low end
+    face: float  # what an ideal iron end face adds to ``air``, the high end
+
+
+def end_winding_inductance(machine: Machine, grid: tuple[int, int] = (4, 12)) -> EndWinding:
+    """End-turn inductance of one phase of a machine's winding, in H.
+
+    Each coil adds turns^2 times ``end_turn_inductance``; the coils of a
+    phase are in series and the coupling between their end turns is left
+    out. The end overhang is the design's ``end_winding_overhang_mm``, or the
+    coil thickness if it gives none. Raises NotImplementedError if the
+    machine does not describe its coils.
+    """
+    design = machine.design
+    shape = machine.coil_shape()
+    overhang = design.axial.end_winding_overhang_mm
+    turns = design.winding.turns_per_coil
+    coils = sum(1 for coil in concentrated_winding(design.slots, design.poles) if coil.phase == "A")
+    one = end_turn_inductance(
+        shape,
+        design.axial.stack_length_mm * 1e-3,
+        None if overhang is None else overhang * 1e-3,
+        grid,
+    )
+    scale = coils * turns**2
+    return EndWinding(
+        estimate=scale * one.estimate,
+        spread=scale * one.spread,
+        air=scale * one.air,
+        face=scale * one.face,
     )

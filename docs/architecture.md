@@ -85,7 +85,7 @@ works with regions, materials, coils and magnets only.
 - `polecraft/core/geometry.py`: regions and their outlines.
 - `polecraft/core/winding.py`: the repeating slice, the coil layout of a
   tooth-wound three-phase winding and its winding factor, and its slot
-  fill, turn length and resistance.
+  fill, turn length, resistance and end-turn inductance.
 - `polecraft/core/mesh.py`: the mesher. It is the only module that uses
   Gmsh, imported only when a mesh is asked for. The thin band of
   air between stator and rotor is built here, not by Gmsh.
@@ -105,8 +105,8 @@ works with regions, materials, coils and magnets only.
   sparse linear systems to it by the name of a solver, so that a faster one
   can be added in one place, and it builds the matrix without working out
   again which entries it has. The solution says how its time was spent.
-  The solver that comes with SciPy is the default. PARDISO, from an
-  optional package, is used only when named, else the default.
+  SciPy's solver is the default. PARDISO, from an optional package, is
+  used only when named, else the default.
 - `polecraft/core/post.py`: results from a solved field. Torque comes from
   the Maxwell stress in the band of air between stator and rotor, and flux
   linkage from the potential over the coil sides. The flux density in the
@@ -126,8 +126,9 @@ type is named.
 
 **`polecraft/studies/`** holds calculations over many solves: cogging
 torque (`polecraft/studies/cogging.py`), back-EMF
-(`polecraft/studies/back_emf.py`) and loaded torque
-(`polecraft/studies/loaded_torque.py`). A study calls the solver.
+(`polecraft/studies/back_emf.py`), loaded torque
+(`polecraft/studies/loaded_torque.py`) and inductance
+(`polecraft/studies/inductance.py`). A study calls the solver.
 
 Three rules keep these apart:
 
