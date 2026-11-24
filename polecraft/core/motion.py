@@ -193,10 +193,18 @@ def solve_angles(
         problem = problem_at(turned)
         timings.add("turn rotor", built - started)
         timings.add("build problem", time.perf_counter() - built)
-        if len(problem.nodes) != len(turned.nodes):
+        nodes = np.asarray(problem.nodes)
+        if nodes.shape != turned.nodes.shape:
             raise ValueError(
-                f"the problem at {angle} rad has {len(problem.nodes)} nodes, "
+                f"the problem at {angle} rad has {len(nodes)} nodes, "
                 f"the turned mesh {len(turned.nodes)}: build it on the turned mesh"
+            )
+        # A whole machine has the same number of nodes at every angle, so a
+        # problem left on the unturned mesh shows only in where they are.
+        if not np.array_equal(nodes, turned.nodes):
+            raise ValueError(
+                f"the nodes of the problem at {angle} rad are not where the "
+                "turned mesh has them: build it on the turned mesh"
             )
         start = _start_from(steps[-1].solution, turned) if warm and steps else None
         solution = solve(

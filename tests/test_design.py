@@ -8,7 +8,13 @@ from pathlib import Path
 import pytest
 
 import polecraft
-from polecraft.design import Design, design_from_dict, design_to_dict, load_design
+from polecraft.design import (
+    TEMPERATURE_RANGE_C,
+    Design,
+    design_from_dict,
+    design_to_dict,
+    load_design,
+)
 from polecraft.machines.qdd_outer import QddOuterParameters
 from polecraft.validation import DesignError
 
@@ -103,7 +109,7 @@ def test_valid_file_loads_expected_values(data_dir: Path) -> None:
     assert design.winding.turns_per_coil == 30
     assert design.winding.parallel_strands == 2
     assert design.winding.conductor == "copper"
-    assert design.winding.connection == "delta"
+    assert design.winding.connection == "star"
     assert design.winding.temperature_C == 90.0
 
     assert design.steel.stator == "M250-35A"
@@ -327,12 +333,23 @@ def test_sizes_and_counts_must_be_positive(path, value, changed, problems_of) ->
         "geometry.stator.tooth_tip_taper_mm",
         "axial.magnet_overhang_mm",
         "axial.skew_deg",
-        "axial.end_winding_overhang_mm",
     ],
 )
 def test_fields_that_may_be_zero_but_not_negative(path, changed, problems_of) -> None:
     design_from_dict(changed(path, 0))
     assert list(problems_of(changed(path, -0.1))) == [path]
+
+
+def test_end_winding_overhang_is_a_length_above_zero_or_left_to_an_estimate(
+    changed, problems_of
+) -> None:
+    # A coil has to cross the end of its tooth, so it cannot stand out by nothing.
+    path = "axial.end_winding_overhang_mm"
+    assert design_from_dict(changed(path, 0.01)).axial.end_winding_overhang_mm == 0.01
+    assert design_from_dict(changed(path, None)).axial.end_winding_overhang_mm is None
+    for value in (0, 0.0, -0.1):
+        problems = problems_of(changed(path, value))
+        assert list(problems) == [path] and "greater than 0" in problems[path]
 
 
 def test_stacking_factor_cannot_exceed_one(changed, problems_of) -> None:
@@ -342,9 +359,47 @@ def test_stacking_factor_cannot_exceed_one(changed, problems_of) -> None:
 
 
 @pytest.mark.parametrize("path", ["magnet.temperature_C", "winding.temperature_C"])
-def test_temperature_below_absolute_zero_is_rejected(path, changed, problems_of) -> None:
-    design_from_dict(changed(path, -273))
-    assert list(problems_of(changed(path, -273.15))) == [path]
+def test_temperature_must_be_inside_the_sanity_bound(path, changed, problems_of) -> None:
+    low, high = TEMPERATURE_RANGE_C
+    assert (low, high) == (-100.0, 300.0)
+    for inside in (low, -40, 20, high):
+        design = design_from_dict(changed(path, inside))
+        section, key = path.split(".")
+        assert getattr(getattr(design, section), key) == inside
+    # -273 is above absolute zero, yet the straight line for copper is long
+    # below zero resistance there.
+    for outside in (-100.01, -234.5, -273, -1000, 300.01, 1e6):
+        problems = problems_of(changed(path, outside))
+        assert list(problems) == [path]
+        assert "between -100 and 300 degrees Celsius" in problems[path]
+        assert f"got {float(outside)!r}." in problems[path]
+        # The bound comes from copper; it is not a promise about the magnet.
+        assert "sanity bound" in problems[path] and "copper resistance" in problems[path]
+        assert "only up to its grade's working temperature" in problems[path]
+        assert "does not store yet" in problems[path]
+
+
+@pytest.mark.parametrize("path", ["magnet.temperature_C", "winding.temperature_C"])
+@pytest.mark.parametrize(
+    ("outside", "shown"), [(-100.0001, "-100.0001"), (300.0000001, "300.0000001")]
+)
+def test_temperature_just_outside_is_shown_in_full(
+    path, outside, shown, changed, problems_of
+) -> None:
+    # Rounded to six figures these would print as the limits themselves.
+    assert f"{outside:g}" in ("-100", "300")
+    problems = problems_of(changed(path, outside))
+    assert list(problems) == [path]
+    assert f"got {shown}." in problems[path]
+
+
+def test_copper_resistivity_stays_positive_at_every_temperature_a_design_may_give() -> None:
+    from polecraft.core.materials import load_material
+
+    copper = load_material("copper")
+    low, high = TEMPERATURE_RANGE_C
+    assert copper.resistivity_at(low) > 0.5 * copper.resistivity
+    assert copper.resistivity_at(high) < 2.5 * copper.resistivity
 
 
 def test_unknown_connection_lists_the_choices(changed, problems_of) -> None:
@@ -553,6 +608,22 @@ def test_error_survives_pickling(changed) -> None:
 
 def test_valid_design_has_no_warnings(valid_data: dict) -> None:
     assert design_from_dict(valid_data).warnings == ()
+
+
+def test_shipped_designs_have_no_warnings(repo_root: Path) -> None:
+    designs = sorted((repo_root / "designs").glob("*.yaml"))
+    assert designs
+    for path in designs:
+        assert load_design(path).warnings == ()
+
+
+def test_delta_connection_loads_with_a_warning_about_circulating_current(changed) -> None:
+    design = design_from_dict(changed("winding.connection", "delta"))
+    assert design.winding.connection == "delta"
+    [warning] = design.warnings
+    assert warning.path == "winding.connection"
+    assert "sinusoidal" in warning.message and "third-harmonic current" in warning.message
+    assert "closed delta" in warning.message
 
 
 def test_over_filled_slot_is_rejected(changed, problems_of) -> None:

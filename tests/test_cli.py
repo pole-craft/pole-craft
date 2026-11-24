@@ -326,7 +326,10 @@ def test_solve_command_options(
 
     weaker = solve_output(capsys, str(reference), "--current", "10", "--remanence", "0.6", "-o", picture)
     assert "magnet N42SH: remanence 0.6 T" in weaker
-    assert value(weaker, "torque:") < 0.7 * base
+    # Torque follows the magnet's strength. Measured 1 % above half: at 1.2 T
+    # the steel is nearer saturation (1.98 T against 1.28 T), which holds the
+    # full-strength torque a little under twice the half-strength one.
+    assert value(weaker, "torque:") == pytest.approx(0.5 * base, rel=0.03)
 
 
 def test_solve_command_refuses_what_it_cannot_do(
@@ -485,6 +488,9 @@ def test_help_describes_the_solve_command(capsys: pytest.CaptureFixture) -> None
         assert option in text
     assert f"Needs Gmsh: {INSTALL}" in text
     assert "the steel and the magnet are stand-ins" in text  # said before anyone runs it
+    # The package has measured steel data; the command does not read it yet.
+    assert "does not use the material library yet" in text
+    assert "not in the package" not in text
     assert "<design name>_field.png" in text
     assert "rotor angle 0" in text
 

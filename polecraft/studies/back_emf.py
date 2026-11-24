@@ -14,6 +14,10 @@ The rate of change is taken from the harmonics of the samples (they cover
 whole cycles), which is exact for every harmonic below half the number of
 samples a cycle. Harmonics above that alias onto lower ones; 48 samples a
 cycle are enough for the waveforms of surface-magnet machines.
+
+The EMF is that of an open phase winding. It carries a third harmonic that
+is alike in all three phases; in a delta connection that drives a current
+round the closed loop, which is not modelled here.
 """
 
 from __future__ import annotations

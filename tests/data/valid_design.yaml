@@ -37,7 +37,7 @@ winding:
   turns_per_coil: 30
   parallel_strands: 2
   conductor: copper
-  connection: delta
+  connection: star
   temperature_C: 90
 
 steel:

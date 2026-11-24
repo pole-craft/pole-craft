@@ -15,6 +15,7 @@ from polecraft.core.winding import (
     EndTurns,
     PhaseWinding,
     Symmetry,
+    SQUARE_GMD,
     end_turn_inductance,
     end_winding_inductance,
     loop_inductance,
@@ -372,7 +373,7 @@ def test_phase_axis_rejects_unbalanced_combinations() -> None:
 # Electrical model
 
 MM = 1e-3
-COPPER = Conductor(resistivity=1.7241e-8, temperature_coefficient=0.00393, density=8960.0)
+COPPER = Conductor(resistivity=1.7241e-8, temperature_coefficient=0.00393, density=8890.0)
 SHAPE = CoilShape(tooth_width=3.0 * MM, thickness=2.0 * MM, side_area=12.0 * MM**2)
 
 
@@ -461,6 +462,31 @@ def test_star_and_delta_deliver_the_same_power_for_the_same_phase_quantities() -
         assert winding.copper_loss(5.0) == pytest.approx(3.0 * 25.0 * winding.resistance())
 
 
+def test_copper_loss_takes_the_rms_current_not_the_peak(repo_root) -> None:
+    from polecraft.design import load_design
+    from polecraft.machines import machine_for
+
+    machine = machine_for(load_design(repo_root / "designs" / "qdd_outer_36s42p.yaml"))
+    winding = phase_winding(machine)
+    peak = 10.0
+    # The loss at each rotor angle of a cycle, from the phase currents the
+    # studies apply for a peak current: sum of i^2 R over the phases.
+    angles = 2.0 * math.pi / (machine.design.poles // 2) * np.arange(24) / 24
+    sampled = [
+        sum(i * i for i in machine.excitation(float(angle), peak, 0.3).values())
+        * winding.resistance()
+        for angle in angles
+    ]
+    assert winding.copper_loss(rms_phase_current=peak / math.sqrt(2.0)) == pytest.approx(
+        float(np.mean(sampled)), rel=1e-12
+    )
+    # Passing the peak current would double it.
+    assert winding.copper_loss(peak) == pytest.approx(2.0 * float(np.mean(sampled)), rel=1e-12)
+    assert winding.copper_loss(peak / math.sqrt(2.0), 20.0) == pytest.approx(
+        1.5 * peak**2 * winding.resistance(20.0)
+    )
+
+
 def test_example_design_winding(repo_root) -> None:
     from polecraft.design import load_design
     from polecraft.machines import machine_for
@@ -523,7 +549,31 @@ def test_loop_inductance_of_a_ring_matches_the_textbook_formula() -> None:
     radius, wire = 10.0 * MM, 1.0 * MM
     loops, cell = ring_of_round_wire(radius, wire, 8)
     exact = MU0 * radius * (math.log(8.0 * radius / wire) - 1.75)
-    assert loop_inductance(loops, cell) == pytest.approx(exact, rel=0.03)
+    # Within 0.5 % with 52 filaments; what is left is the stepped edge of the
+    # round section.
+    assert loop_inductance(loops, cell) == pytest.approx(exact, rel=0.01)
+
+
+def test_one_filament_has_the_inductance_of_a_thin_ring_at_its_mean_distance() -> None:
+    # A single filament has no neighbours, so its own term is the whole
+    # answer: a thin ring of radius R whose section has geometric mean
+    # distance g from itself has L = mu0 R (ln(8 R / g) - 2), which is the
+    # mutual inductance of two such rings a distance g apart. Terms of order
+    # (g / R)^2 are left out of the formula; they are 0.06 % here.
+    radius, cell = 10.0 * MM, 1.0 * MM
+    angle = np.linspace(0.0, 2.0 * math.pi, 481)[:-1]
+    points = np.column_stack(
+        [radius * np.cos(angle), radius * np.sin(angle), np.zeros(angle.size)]
+    )
+    ring = (points, np.roll(points, -1, axis=0))
+    assert SQUARE_GMD == pytest.approx(0.44705, abs=1e-5)
+    exact = MU0 * radius * (math.log(8.0 * radius / (SQUARE_GMD * cell)) - 2.0)
+    assert loop_inductance([ring], cell) == pytest.approx(exact, rel=2e-3)
+    # A thinner conductor has more: ln(1 / 0.3) more for each mu0 R.
+    thin = loop_inductance([ring], 0.3 * cell)
+    assert thin - loop_inductance([ring], cell) == pytest.approx(
+        MU0 * radius * math.log(1.0 / 0.3), rel=5e-3
+    )
 
 
 def test_loop_inductance_needs_loops_and_a_cell() -> None:
@@ -532,6 +582,132 @@ def test_loop_inductance_needs_loops_and_a_cell() -> None:
         loop_inductance([], cell)
     with pytest.raises(ValueError, match="cell"):
         loop_inductance(loops, 0.0)
+
+
+def coil_as_closed_loops(
+    shape: CoilShape, stack: float, overhang: float, grid: tuple[int, int]
+) -> tuple[list, float, float]:
+    """A straightened tooth coil as closed filaments, the side of their cells, and its 2D value.
+
+    Each filament runs up one side of the tooth, round a quarter ellipse,
+    across the end of the tooth, round a second quarter ellipse and back the
+    same way. The 2D value, in H/m per turn squared, is that of the sides
+    as a two-wire line: mu0 / pi times the mean of ln(distance to the return
+    side / distance to the same side) over all pairs of filaments.
+    """
+    across, along = grid
+    depth = shape.side_area / shape.thickness
+    offsets = (np.arange(across) + 0.5) / across * shape.thickness
+    heights = (np.arange(along) + 0.5) / along * depth
+    cell = math.sqrt(shape.thickness / across * depth / along)
+    step = 0.5 * min(shape.thickness / across, depth / along)
+    half_width, half_length = shape.tooth_width / 2.0, stack / 2.0
+    loops = []
+    for offset in offsets:
+        reach = offset * overhang / shape.thickness
+        turn = np.linspace(0.0, 0.5 * math.pi, max(4, math.ceil((offset + reach) / step)) + 1)
+        z = np.linspace(-half_length, half_length, math.ceil(stack / step) + 1)
+        x = np.linspace(half_width, -half_width, math.ceil(shape.tooth_width / step) + 1)
+        flat = np.concatenate(
+            [
+                np.column_stack([np.full(z.size, half_width + offset), z]),
+                np.column_stack(
+                    [half_width + offset * np.cos(turn), half_length + reach * np.sin(turn)]
+                )[1:],
+                np.column_stack([x, np.full(x.size, half_length + reach)])[1:],
+                np.column_stack(
+                    [-half_width - offset * np.sin(turn), half_length + reach * np.cos(turn)]
+                )[1:],
+            ]
+        )
+        # The second half is the first turned half a turn about the y axis.
+        path = np.concatenate([flat, -flat[1:-1]])
+        for height in heights:
+            points = np.column_stack([path[:, 0], np.full(len(path), height), path[:, 1]])
+            loops.append((points, np.roll(points, -1, axis=0)))
+    x = np.repeat(half_width + offsets, along)
+    y = np.tile(heights, across)
+    same = np.hypot(x[:, None] - x[None, :], y[:, None] - y[None, :])
+    np.fill_diagonal(same, SQUARE_GMD * cell)
+    opposite = np.hypot(x[:, None] + x[None, :], y[:, None] - y[None, :])
+    return loops, cell, MU0 / math.pi * float(np.mean(np.log(opposite / same)))
+
+
+@pytest.mark.parametrize("overhang", [1.44 * MM, 4.0 * MM], ids=["1.44 mm", "4 mm"])
+def test_end_turns_and_2d_value_add_up_to_the_whole_coil_in_air(overhang: float) -> None:
+    # The same filaments as closed loops, every segment against every other
+    # by Neumann's formula, give the inductance of the whole coil in air.
+    # The end-turn part is defined as that less the 2D value of the sides.
+    grid, stack = (2, 3), 12.0 * MM
+    loops, cell, per_metre = coil_as_closed_loops(TOOTH_COIL, stack, overhang, grid)
+    whole = loop_inductance(loops, cell)
+    ends = end_turn_inductance(TOOTH_COIL, stack, overhang, grid)
+    # Measured 0.2 % apart: the sides are summed exactly in one and by the
+    # midpoint rule in the other.
+    assert ends.air + per_metre * stack == pytest.approx(whole, rel=0.01)
+    # The end turns are under a third of the whole, so they are held less
+    # tightly by it; measured 1 % and 0.7 % apart.
+    assert ends.air == pytest.approx(whole - per_metre * stack, rel=0.03)
+    assert 0.1 < ends.air / whole < 0.35
+
+
+def test_end_face_term_of_a_wide_flat_coil_is_that_of_two_parallel_wires() -> None:
+    # One filament on a tooth far wider than the coil is thick: nearly all of
+    # each end turn is the straight run across the tooth, 1 mm beyond the end
+    # face. Its mirror image is a parallel run of the same length carrying
+    # the same current 2 mm away, and two parallel filaments of length l a
+    # distance d apart have M = mu0 / (2 pi) (l asinh(l / d) - sqrt(l^2 + d^2) + d).
+    width, thickness, overhang = 100.0 * MM, 0.2 * MM, 2.0 * MM
+    shape = CoilShape(tooth_width=width, thickness=thickness, side_area=thickness**2)
+    # The filament is at mid-thickness, so its run is half the overhang out.
+    apart = overhang
+    mutual = MU0 / (2.0 * math.pi) * (
+        width * math.asinh(width / apart) - math.hypot(width, apart) + apart
+    )
+    face = end_turn_inductance(shape, 20.0 * MM, overhang, grid=(1, 1)).face
+    # Two ends. Measured 0.1 % under: the short corners add a little of
+    # either sign.
+    assert face == pytest.approx(2.0 * mutual, rel=0.01)
+
+
+def test_end_face_term_of_a_narrow_coil_standing_far_out_is_negative() -> None:
+    # One filament on a narrow tooth with a long overhang: each end turn is
+    # a hairpin, two legs of length l = 8 mm standing on the end face
+    # w = 4 mm apart, joined by the run across the tooth. The current in the
+    # legs is across the face, so their images carry it the other way:
+    #   each leg and its own image, in line, opposed:        -M_end(l, g)
+    #   each leg and the image of the other leg, alike:      +M_end(l, w)
+    #   the run and its image, side by side 2 l apart:       +M_side(w, 2 l)
+    # and the run is at right angles to the legs. M_side(l, d) is the mutual
+    # inductance of two parallel filaments of length l side by side, as in
+    # the test above, and M_end(l, d) that of two such filaments one after
+    # the other, on lines d apart: M_side(2 l, d) / 2 - M_side(l, d), since
+    # two filaments of length 2 l side by side are two such pairs and two
+    # side-by-side pairs of length l. A leg and its own image stand for one
+    # conductor of side t, so g is its geometric mean distance from itself.
+    width, thickness, overhang = 4.0 * MM, 0.1 * MM, 16.0 * MM
+    shape = CoilShape(tooth_width=width, thickness=thickness, side_area=thickness**2)
+    leg = overhang / 2.0  # the filament is at mid-thickness
+
+    def side(length: float, apart: float) -> float:
+        return MU0 / (2.0 * math.pi) * (
+            length * math.asinh(length / apart) - math.hypot(length, apart) + apart
+        )
+
+    def end_to_end(length: float, apart: float) -> float:
+        return 0.5 * side(2.0 * length, apart) - side(length, apart)
+
+    one_end = (
+        -2.0 * end_to_end(leg, SQUARE_GMD * thickness)
+        + 2.0 * end_to_end(leg, width)
+        + side(width, 2.0 * leg)
+    )
+    assert one_end < 0.0
+    face = end_turn_inductance(shape, 20.0 * MM, overhang, grid=(1, 1)).face
+    # Measured 0.4 % apart: the legs are quarter ellipses, 0.05 mm out of
+    # true at the face. With the images' current along the legs left as it
+    # is, not reversed, the sum would be +1.5 nH in place of -1.1 nH.
+    assert face == pytest.approx(2.0 * one_end, rel=0.02)
 
 
 def test_end_turn_part_settles_as_the_stack_grows() -> None:
@@ -560,9 +736,14 @@ def test_end_turns_of_the_reference_coil() -> None:
     ends = end_turn_inductance(TOOTH_COIL, 12.0 * MM)
     assert ends.air > 0.0 and ends.face > 0.0
     assert ends.estimate == ends.air + 0.5 * ends.face and ends.spread == 0.5 * ends.face
-    # About a nanohenry per turn squared: 20 turns on each of 12 coils give
-    # some microhenries a phase, against 0.6 mH from the 2D model.
-    assert 0.5e-9 < ends.estimate < 2e-9
+    # About a nanohenry and a half per turn squared: 20 turns on each of 12
+    # coils give 7 microhenries a phase, against 0.6 mH from the 2D model.
+    # The air part is tied to the whole coil's inductance, and the face part
+    # to parallel wires, by the tests above; these hold the values here.
+    assert ends.air == pytest.approx(0.864e-9, rel=0.1)
+    # Tight: softening the images of other filaments too would move it 0.4 %.
+    assert ends.face == pytest.approx(1.1611e-9, rel=2e-3)
+    assert ends.estimate == pytest.approx(1.445e-9, rel=0.1)
 
 
 def test_default_overhang_is_the_coil_thickness() -> None:

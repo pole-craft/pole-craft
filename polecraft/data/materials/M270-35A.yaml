@@ -13,22 +13,38 @@
 # The magnetisation table is J (peak polarisation) against H (peak field
 # strength) at 50 Hz, as the brochure gives it, on pages 22 and 23. The
 # loader converts it to B = J + mu0 H. Below 0.1 T the brochure has no
-# data; the curve starts at B = 0, H = 0. Above 1.8 T the curve is
-# extended with a slope that approaches that of air (see BHCurve).
+# data; the curve starts at B = 0, H = 0.
+#
+# The rows are 0.1 T apart, and between them the curve is a smooth
+# interpolation. At 5000 A/m it gives J = 1.638 T, 0.012 T below the 1.65 T
+# of the brochure's table of typical magnetic properties on page 6, whose
+# values are rounded to 0.01 T. That value is not added as a row: pinning
+# the curve to a rounded number between two rows puts a corner in it.
+#
+# Above 1.8 T the brochure gives nothing for this grade: no row and no
+# saturation polarisation. The curve is extended by the rule in BHCurve,
+# with a slope that approaches that of air. For this table the rule gives
+#   J = 1.830 T at 18 kA/m, 1.849 T at 30 kA/m, 1.865 T at 50 kA/m and
+#   1.884 T at 100 kA/m, tending to 1.899 T.
+# The last rows of the table rise by 0.1 T for 3280 and then 4440 A/m, so
+# this bends over more sharply than they suggest and 1.899 T is likely
+# below the real saturation. Flux in steel driven above 1.8 T is therefore
+# understated. When a measured saturation polarisation is at hand, give it
+# here as saturation_polarisation_T, with its source.
 #
 # Copied from the brochure on 2026-11-23. Cross-checks against the same
 # brochure: the loss table gives 1.01 W/kg at 1.0 T and 2.47 W/kg at 1.5 T,
-# as the typical properties table on page 5 does; the magnetisation table
-# gives about 1.54, 1.65 and 1.77 T at 2500, 5000 and 10000 A/m, as page 5
-# does.
+# as the typical properties table on page 6 does; the magnetisation curve
+# gives 1.543 and 1.767 T at 2500 and 10000 A/m, where page 6 has 1.54 and
+# 1.77 T.
 name: M270-35A
 kind: steel
 description: Non-oriented electrical steel M270-35A, 0.35 mm. Typical values, not guaranteed.
 source: >-
   Cogent Power, Electrical Steel Non Oriented Fully Processed (brochure,
-  Cogent 2002-11), typical data tables pages 18-25 and typical physical
-  properties page 8. Typical, not guaranteed. Epstein frame, IEC 60404-2 and
-  IEC 60404-10.
+  Cogent 2002-11), typical magnetic properties page 6, typical physical
+  properties page 8 and typical data tables pages 18-26. Typical, not
+  guaranteed. Epstein frame, IEC 60404-2 and IEC 60404-10.
 thickness_mm: 0.35
 density_kg_m3: 7650             # conventional density 7.65 kg/dm3, page 8
 resistivity_ohm_m: 52.0e-8      # 52 micro-ohm cm, page 8

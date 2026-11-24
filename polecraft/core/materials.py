@@ -11,7 +11,9 @@ together with the recoil permeability, which is what the field sees.
 
 from __future__ import annotations
 
+import dataclasses
 import math
+import warnings
 from dataclasses import dataclass
 from importlib import resources
 from typing import Protocol
@@ -22,12 +24,15 @@ from numpy.typing import ArrayLike, NDArray
 from scipy.interpolate import PchipInterpolator
 from scipy.optimize import nnls
 
+from polecraft.validation import StrictLoader
+
 # Permeability of free space in H/m. The classical value, as FEMM uses; the
 # measured value differs from it by less than one part in a billion.
 MU0 = 4e-7 * math.pi
 
 # Temperature in degrees Celsius at which library data for magnets is given.
 REFERENCE_TEMPERATURE = 20.0
+ABSOLUTE_ZERO = -273.15  # degrees Celsius
 
 
 class Material(Protocol):
@@ -76,29 +81,39 @@ COPPER = LinearMaterial(1.0)
 class Magnet:
     """A permanent magnet on its recoil line: B = mu_r mu0 H + Br.
 
-    The numbers are those at ``temperature`` (degrees Celsius, 20 for a
-    library entry). The two coefficients, as fractions per kelvin about 20 C
-    (-0.0012 is -0.12 %/K), say how the remanence and the coercivity change
-    with temperature; ``at_temperature`` applies them. They are None when
-    the entry has no temperature data.
+    The remanence is the one at ``temperature`` (degrees Celsius, 20 for a
+    library entry). ``remanence_coefficient``, a fraction per kelvin about
+    20 C (-0.0012 is -0.12 %/K), says how it changes with temperature;
+    ``at_temperature`` applies it. It is None when the entry has no
+    temperature data.
+
+    The intrinsic coercivity Hcj and its coefficient are kept as the entry
+    gives them, at 20 C, for a later check against demagnetisation. They
+    take no part in the field solution, which stays on the recoil line.
     """
 
     remanence: float  # Br in tesla
     relative_permeability: float = 1.05  # recoil permeability
     remanence_coefficient: float | None = None  # per kelvin
-    coercivity_coefficient: float | None = None  # per kelvin
     temperature: float = REFERENCE_TEMPERATURE  # degrees Celsius
+    intrinsic_coercivity: float | None = None  # Hcj in A/m at 20 C
+    intrinsic_coercivity_coefficient: float | None = None  # per kelvin
 
     def __post_init__(self) -> None:
         if not (math.isfinite(self.remanence) and self.remanence >= 0.0):
             raise ValueError(f"remanence must be zero or more, in tesla, not {self.remanence}")
         LinearMaterial(self.relative_permeability)  # checks the permeability
-        for name in ("remanence_coefficient", "coercivity_coefficient"):
+        for name in ("remanence_coefficient", "intrinsic_coercivity_coefficient"):
             value = getattr(self, name)
             if value is not None and not math.isfinite(value):
                 raise ValueError(f"{name} must be a finite number, not {value}")
         if not math.isfinite(self.temperature):
             raise ValueError(f"temperature must be a finite number, not {self.temperature}")
+        hcj = self.intrinsic_coercivity
+        if hcj is not None and not (math.isfinite(hcj) and hcj > 0.0):
+            raise ValueError(f"intrinsic_coercivity must be a positive number, in A/m, not {hcj}")
+        if hcj is None and self.intrinsic_coercivity_coefficient is not None:
+            raise ValueError("intrinsic_coercivity_coefficient needs intrinsic_coercivity as well")
 
     @property
     def coercivity(self) -> float:
@@ -108,15 +123,16 @@ class Magnet:
     def at_temperature(self, temperature: float) -> Magnet:
         """The magnet at ``temperature`` in degrees Celsius, from the 20 C entry.
 
-        Br and Hcb each change linearly with their coefficient. The recoil
-        permeability follows from them, mu_r = Br / (mu0 Hcb), so the recoil
-        line stays consistent. The linear law is an approximation that holds
-        over the range a datasheet gives, not far beyond it. Raises
-        ValueError for a magnet with no temperature data, one that is not at
-        20 C, or a temperature at which Br or Hcb would reach zero.
+        Br changes linearly with its coefficient. The recoil permeability
+        stays as it is: the straight part of the demagnetisation curve keeps
+        its slope as the magnet warms, so Hcb = Br / (mu_r mu0) follows Br.
+        The linear law is an approximation that holds over the range a
+        datasheet gives, not far beyond it. Raises ValueError for a magnet
+        with no temperature data, one that is not at 20 C, a temperature
+        below absolute zero, or one at which Br would reach zero.
         """
-        if self.remanence_coefficient is None or self.coercivity_coefficient is None:
-            raise ValueError("this magnet has no temperature coefficients")
+        if self.remanence_coefficient is None:
+            raise ValueError("this magnet has no temperature coefficient for its remanence")
         if self.temperature != REFERENCE_TEMPERATURE:
             raise ValueError(
                 f"start from the {REFERENCE_TEMPERATURE:g} C magnet; "
@@ -124,21 +140,19 @@ class Magnet:
             )
         if not math.isfinite(temperature):
             raise ValueError(f"temperature must be a finite number, not {temperature}")
+        if temperature < ABSOLUTE_ZERO:
+            raise ValueError(
+                f"temperature must be {ABSOLUTE_ZERO:g} C (absolute zero) or above, "
+                f"not {temperature:g} C"
+            )
         rise = temperature - REFERENCE_TEMPERATURE
         remanence = self.remanence * (1.0 + self.remanence_coefficient * rise)
-        coercivity = self.coercivity * (1.0 + self.coercivity_coefficient * rise)
-        if remanence <= 0.0 or coercivity <= 0.0:
+        if remanence <= 0.0:
             raise ValueError(
-                f"at {temperature:g} C the linear temperature law gives a remanence or "
-                f"coercivity of zero or less; it does not hold that far from 20 C"
+                f"at {temperature:g} C the linear temperature law gives a remanence of "
+                f"zero or less; it does not hold that far from 20 C"
             )
-        return Magnet(
-            remanence=remanence,
-            relative_permeability=remanence / (MU0 * coercivity),
-            remanence_coefficient=self.remanence_coefficient,
-            coercivity_coefficient=self.coercivity_coefficient,
-            temperature=temperature,
-        )
+        return dataclasses.replace(self, remanence=remanence, temperature=temperature)
 
     @property
     def linear(self) -> bool:
@@ -226,7 +240,10 @@ class BHCurve:
     The table starts at B = 0, H = 0 and both columns increase. Between the
     table points H(B) is a monotone cubic (PCHIP), so the curve passes
     through every point, never turns back, and has a continuous slope, which
-    the Newton iteration needs to converge smoothly.
+    the Newton iteration needs to converge smoothly. The polarisation
+    J = B - mu0 H must not fall from one row to the next, and the slope at
+    the last row is held to that of air at most, so that beyond the table
+    the curve never asks for more field than air would.
 
     Beyond the last point (b_n, h_n) the polarisation J = B - mu0 H levels
     off at ``saturation`` and the slope of the curve tends to that of air:
@@ -237,10 +254,14 @@ class BHCurve:
     point is the one the table has there. When no saturation is given the
     tail adds dJ = (b_n - b_n-1) (1 - mu0 s_n), the last table step scaled
     by how far the end slope s_n = dH/dB is from that of air. That is a
-    rule, not a measurement: for a table ending at 1.8 T it levels off near
-    1.9 T, likely below the real saturation, so beyond the table the steel
-    is taken as more saturated than it is. A table whose end is already as
-    soft as air continues as a straight line.
+    rule, not a measurement, and it bends the curve over sharply. For the
+    M270-35A entry, whose table ends at 1.8 T and 11.6 kA/m, it gives
+    J = 1.830 T at 18 kA/m, 1.849 T at 30 kA/m, 1.865 T at 50 kA/m and
+    1.884 T at 100 kA/m, tending to 1.899 T. That is likely below the real
+    saturation, so beyond the table the steel is taken as harder to
+    magnetise than it is and the flux in steel above 1.8 T is understated.
+    Give a measured saturation where a source has one. A table whose end is
+    already as soft as air continues as a straight line.
     """
 
     def __init__(self, b: ArrayLike, h: ArrayLike, saturation: float | None = None) -> None:
@@ -262,6 +283,11 @@ class BHCurve:
         # interval is a safe floor that keeps the cubic monotone.
         slope[0] = max(slope[0], secant[0])
         slope[-1] = max(slope[-1], secant[-1])
+        # PCHIP's end slope can also come out above that of air when the last
+        # interval is at or near it, and the tail would then stay stiffer
+        # than air for ever. The last secant is not above 1 / mu0 (the table
+        # check sees to that), so the cap leaves the cubic monotone.
+        slope[-1] = min(slope[-1], 1.0 / MU0)
 
         # Per interval, H = h0 + t (d + t (c2 + t c3)) with t = B - b0. The
         # last entry is the straight line beyond the table.
@@ -368,12 +394,13 @@ _UNITS = {
     "saturation_polarisation_T": "tesla",
     "loss_step_T": "tesla",
     "remanence_temp_coefficient_per_K": "fraction per kelvin, about 20 C",
-    "coercivity_temp_coefficient_per_K": "fraction per kelvin, about 20 C",
+    "intrinsic_coercivity_A_per_m": "ampere per metre at 20 C",
+    "intrinsic_coercivity_temp_coefficient_per_K": "fraction per kelvin, about 20 C",
 }
-_COEFFICIENTS = {
-    "remanence_temp_coefficient_per_K": "remanence_coefficient",
-    "coercivity_temp_coefficient_per_K": "coercivity_coefficient",
-}
+# Refused because the name does not say which coercivity it means. The
+# coefficient a datasheet gives is for the intrinsic coercivity Hcj; Hcb, on
+# the recoil line, follows the remanence and has no coefficient of its own.
+_AMBIGUOUS_COERCIVITY_COEFFICIENT = "coercivity_temp_coefficient_per_K"
 
 
 @dataclass(frozen=True)
@@ -391,8 +418,26 @@ class Conductor:
                 raise ValueError(f"{name} must be a positive number, not {value}")
 
     def resistivity_at(self, temperature: float) -> float:
-        """Resistivity in ohm metres at ``temperature`` in degrees Celsius."""
-        return self.resistivity * (1.0 + self.temperature_coefficient * (temperature - 20.0))
+        """Resistivity in ohm metres at ``temperature`` in degrees Celsius.
+
+        Linear about 20 C. Raises ValueError where the line reaches zero,
+        far below any winding temperature (about -234 C for copper).
+        """
+        if not math.isfinite(temperature):
+            raise ValueError(f"temperature must be a finite number, not {temperature}")
+        value = self.resistivity * (
+            1.0 + self.temperature_coefficient * (temperature - REFERENCE_TEMPERATURE)
+        )
+        if value <= 0.0:
+            raise ValueError(
+                f"at {temperature:g} C the linear temperature law gives a resistivity of "
+                f"zero or less; it does not hold that far from 20 C"
+            )
+        return value
+
+
+# Fall in polarisation, in tesla, that is put down to rounding in B - mu0 H.
+_POLARISATION_ROUNDING = 1e-9
 
 
 def _check_table(b: NDArray[np.float64], h: NDArray[np.float64]) -> None:
@@ -417,6 +462,17 @@ def _check_table(b: NDArray[np.float64], h: NDArray[np.float64]) -> None:
                 f"BH table: {name} must increase from row to row; "
                 f"row {row} ({column[row - 1]:g}) is not above row {row - 1} ({column[row - 2]:g})"
             )
+    # A steel cannot need more field than air for a step in B: where
+    # J = B - mu0 H falls, the curve would stay stiffer than air beyond it.
+    polarisation = b - MU0 * h
+    falls = np.flatnonzero(np.diff(polarisation) < -_POLARISATION_ROUNDING)
+    if falls.size:
+        row = int(falls[0]) + 2
+        raise ValueError(
+            f"BH table: polarisation J = B - mu0 H must not fall from row to row; "
+            f"row {row} ({polarisation[row - 1]:.6g} T) is below row {row - 1} "
+            f"({polarisation[row - 2]:.6g} T), so H rises faster there than it would in air"
+        )
 
 
 def material_names() -> list[str]:
@@ -433,8 +489,14 @@ def _read_entry(name: str) -> dict:
     if name not in names:
         raise ValueError(f"unknown material '{name}'; the library has: {', '.join(names)}")
     entry = resources.files("polecraft.data").joinpath("materials", f"{name}.yaml")
-    data = yaml.safe_load(entry.read_text(encoding="utf-8"))
     where = f"material file {name}.yaml"
+    try:
+        data = yaml.load(entry.read_text(encoding="utf-8"), Loader=StrictLoader)
+    except yaml.YAMLError as error:
+        mark = getattr(error, "problem_mark", None)
+        line = f" at line {mark.line + 1}" if mark else ""
+        detail = getattr(error, "problem", None) or "could not be parsed"
+        raise ValueError(f"{where}: not valid YAML{line}: {detail}") from None
     if not isinstance(data, dict):
         raise ValueError(f"{where}: must be a mapping of fields")
     kind = data.get("kind")
@@ -480,20 +542,7 @@ def load_material(name: str) -> BHCurve | Magnet | Conductor:
     data = _read_entry(name)
     kind = data["kind"]
     if kind == "magnet":
-        coefficients = {}
-        given = [f for f in _COEFFICIENTS if f in data]
-        if given and len(given) != len(_COEFFICIENTS):
-            raise ValueError(
-                f"material file {name}.yaml: give both {' and '.join(_COEFFICIENTS)}, or neither"
-            )
-        for field, argument in _COEFFICIENTS.items():
-            if field in data:
-                coefficients[argument] = _coefficient(data, field, name)
-        return Magnet(
-            remanence=_number(data, "remanence_T", name, positive=False),
-            relative_permeability=_number(data, "relative_permeability", name),
-            **coefficients,
-        )
+        return _magnet(data, name)
     if kind == "conductor":
         return Conductor(
             resistivity=_number(data, "resistivity_ohm_m", name),
@@ -501,6 +550,41 @@ def load_material(name: str) -> BHCurve | Magnet | Conductor:
             density=_number(data, "density_kg_m3", name),
         )
     return _steel(data, name)
+
+
+def _magnet(data: dict, name: str) -> Magnet:
+    """The magnet of a library entry, with whatever temperature data it gives."""
+    where = f"material file {name}.yaml"
+    if _AMBIGUOUS_COERCIVITY_COEFFICIENT in data:
+        raise ValueError(
+            f"{where}: '{_AMBIGUOUS_COERCIVITY_COEFFICIENT}' does not say which coercivity "
+            f"it is for. The coefficient on a datasheet is for the intrinsic coercivity Hcj: "
+            f"write it as 'intrinsic_coercivity_temp_coefficient_per_K', with "
+            f"'intrinsic_coercivity_A_per_m'. The coercivity on the recoil line, Hcb, takes "
+            f"no coefficient: the recoil permeability is held constant with temperature, so "
+            f"Hcb follows the remanence"
+        )
+    optional: dict[str, float] = {}
+    if "remanence_temp_coefficient_per_K" in data:
+        optional["remanence_coefficient"] = _coefficient(
+            data, "remanence_temp_coefficient_per_K", name
+        )
+    if "intrinsic_coercivity_A_per_m" in data:
+        optional["intrinsic_coercivity"] = _number(data, "intrinsic_coercivity_A_per_m", name)
+    if "intrinsic_coercivity_temp_coefficient_per_K" in data:
+        if "intrinsic_coercivity" not in optional:
+            raise ValueError(
+                f"{where}: 'intrinsic_coercivity_temp_coefficient_per_K' needs "
+                f"'intrinsic_coercivity_A_per_m' as well"
+            )
+        optional["intrinsic_coercivity_coefficient"] = _coefficient(
+            data, "intrinsic_coercivity_temp_coefficient_per_K", name
+        )
+    return Magnet(
+        remanence=_number(data, "remanence_T", name, positive=False),
+        relative_permeability=_number(data, "relative_permeability", name),
+        **optional,
+    )
 
 
 def _steel(data: dict, name: str) -> BHCurve:
@@ -518,6 +602,16 @@ def _steel(data: dict, name: str) -> BHCurve:
     if table.ndim != 2 or table.shape[1] != 2:
         raise ValueError(f"{where}: '{field}' must be a list of {rows} rows")
     first, h = table[:, 0], table[:, 1]
+    if field == "jh_curve":
+        # Checked on the column as written: once mu0 H is added, a small
+        # fall in J can hide in a B that still rises.
+        falls = np.flatnonzero(np.diff(first) < 0.0)
+        if falls.size:
+            row = int(falls[0]) + 2
+            raise ValueError(
+                f"{where}: 'jh_curve' polarisation must not fall from row to row; "
+                f"row {row} ({first[row - 1]:g} T) is below row {row - 1} ({first[row - 2]:g} T)"
+            )
     # A datasheet gives polarisation J; the solver needs B = J + mu0 H.
     b = first + MU0 * h if field == "jh_curve" else first
     if b.size and b[0] > 0.0 and h[0] > 0.0:
@@ -532,28 +626,91 @@ def _steel(data: dict, name: str) -> BHCurve:
         raise ValueError(f"{where}: {error}") from None
 
 
+class LossRangeWarning(UserWarning):
+    """A core loss was asked for outside the range its coefficients were fitted over."""
+
+
 @dataclass(frozen=True)
 class CoreLossCoefficients:
     """Coefficients of p = kh f B^beta + kc f^2 B^2 + ke f^1.5 B^1.5 in W/kg.
 
     The three terms are hysteresis, classical eddy current and excess loss
     (Bertotti), for a sinusoidal flux density of peak B in tesla at f in Hz.
+
+    Coefficients from ``CoreLossData.fit`` also carry the range of the data
+    they were fitted to: ``frequency_range`` in Hz, ``min_polarisation`` and
+    ``max_polarisation`` in tesla, and ``polarisation_limits``, the highest
+    fitted polarisation at each fitted frequency (measured tables stop
+    lower at high frequency). The formula is not a law outside the range
+    (above the fitted frequencies it takes no account of skin effect in the
+    sheet, and near saturation the loss leaves the power law), so ``loss``
+    warns there. Between two fitted frequencies the upper limit is taken on
+    the straight line between theirs. All are None for coefficients given by
+    hand.
     """
 
     hysteresis: float  # kh, W/kg per (Hz T^beta)
     eddy: float  # kc, W/kg per (Hz T)^2
     excess: float  # ke, W/kg per (Hz T)^1.5
     hysteresis_exponent: float = 2.0  # beta
+    frequency_range: tuple[float, float] | None = None  # lowest and highest fitted, Hz
+    min_polarisation: float | None = None  # lowest fitted peak polarisation, T
+    max_polarisation: float | None = None  # highest fitted peak polarisation, T
+    # (frequency in Hz, highest fitted peak polarisation in T), by frequency
+    polarisation_limits: tuple[tuple[float, float], ...] | None = None
 
     def loss(self, frequency: ArrayLike, peak: ArrayLike) -> NDArray[np.float64]:
-        """Specific loss in W/kg at ``frequency`` in Hz and peak flux density ``peak`` in T."""
+        """Specific loss in W/kg at ``frequency`` in Hz and peak flux density ``peak`` in T.
+
+        Outside the fitted range, where there is one, the value is still
+        returned, with a ``LossRangeWarning``.
+        """
         f = np.asarray(frequency, dtype=float)
         b = np.asarray(peak, dtype=float)
+        self._warn_outside_fit(f, b)
         return (
             self.hysteresis * f * b**self.hysteresis_exponent
             + self.eddy * (f * b) ** 2
             + self.excess * (f * b) ** 1.5
         )
+
+    def _warn_outside_fit(self, f: NDArray[np.float64], b: NDArray[np.float64]) -> None:
+        outside = []
+        # The margin keeps a table value such as 3 x 0.1 T inside its own range.
+        margin = 1e-9
+        if self.frequency_range is not None:
+            low, high = self.frequency_range
+            if np.any(f < low * (1.0 - margin)) or np.any(f > high * (1.0 + margin)):
+                outside.append(
+                    f"frequencies from {np.min(f):g} to {np.max(f):g} Hz against a fit "
+                    f"over {low:g} to {high:g} Hz"
+                )
+        if self.min_polarisation is not None and np.any(b < self.min_polarisation * (1.0 - margin)):
+            outside.append(
+                f"flux densities down to {np.min(b):g} T against a fit from "
+                f"{self.min_polarisation:g} T up"
+            )
+        if self.max_polarisation is not None:
+            limit: float | NDArray[np.float64] = self.max_polarisation
+            if self.polarisation_limits:
+                fitted, highest = np.array(self.polarisation_limits).T
+                limit = np.interp(f, fitted, highest)
+            at, peak, top = (np.ravel(a) for a in np.broadcast_arrays(f, b, limit))
+            over = peak - top * (1.0 + margin)
+            if np.any(over > 0.0):
+                worst = int(np.argmax(over))
+                outside.append(
+                    f"a flux density of {peak[worst]:g} T at {at[worst]:g} Hz against a fit "
+                    f"up to {top[worst]:g} T there"
+                )
+        if outside:
+            warnings.warn(
+                "core loss asked for outside the fitted range ("
+                + "; ".join(outside)
+                + "); the value is an extrapolation",
+                LossRangeWarning,
+                stacklevel=3,
+            )
 
 
 @dataclass(frozen=True)
@@ -583,6 +740,9 @@ class CoreLossData:
         Least squares on the relative error, with neither coefficient below
         zero. The tables give loss against peak polarisation J; below 1.8 T
         J and B differ by less than 1 %, and the fit treats them as equal.
+        The coefficients keep the frequencies of the points used and their
+        lowest and highest polarisation, overall and the highest at each
+        frequency, and ``loss`` warns outside them.
         """
         f, b, p = self.points(max_frequency, min_polarisation)
         if f.size < 2:
@@ -590,7 +750,18 @@ class CoreLossData:
         kc = self.eddy_coefficient()
         basis = np.column_stack([f * b**hysteresis_exponent, (f * b) ** 1.5]) / p[:, None]
         (kh, ke), _ = nnls(basis, 1.0 - kc * (f * b) ** 2 / p)
-        return CoreLossCoefficients(float(kh), kc, float(ke), hysteresis_exponent)
+        return CoreLossCoefficients(
+            float(kh),
+            kc,
+            float(ke),
+            hysteresis_exponent,
+            frequency_range=(float(f.min()), float(f.max())),
+            min_polarisation=float(b.min()),
+            max_polarisation=float(b.max()),
+            polarisation_limits=tuple(
+                (float(each), float(b[f == each].max())) for each in np.unique(f)
+            ),
+        )
 
     def points(
         self, max_frequency: float = math.inf, min_polarisation: float = 0.0

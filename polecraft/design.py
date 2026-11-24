@@ -13,7 +13,6 @@ from __future__ import annotations
 
 import dataclasses
 import difflib
-import re
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -23,11 +22,16 @@ import yaml
 from polecraft.core.winding import MAX_PACKING, combination_problem, slot_fill
 from polecraft.machines import machine_for, machine_types, parameters_class
 from polecraft.machines.base import MachineParameters
-from polecraft.validation import DesignError, Problem, Section
+from polecraft.validation import DesignError, Problem, Section, StrictLoader
 
 FORMAT_VERSION = 1
 CONNECTIONS = ("star", "delta")
-ABSOLUTE_ZERO_C = -273.15
+# Temperatures a design may give, in degrees Celsius. A sanity bound, set by
+# where the straight line for copper resistance about 20 C is still
+# reasonable: it reaches zero resistance at about -234 C. It is not a range
+# over which a magnet's straight line is good. That one holds only up to the
+# grade's working temperature, which the material library does not store yet.
+TEMPERATURE_RANGE_C = (-100.0, 300.0)
 
 # Advice limits; past them a design still loads, with a warning.
 # Round wire wound on a tooth usually reaches a copper fill of 0.35 to 0.45;
@@ -88,50 +92,6 @@ class Design:
     warnings: tuple[Problem, ...] = field(default=(), compare=False, repr=False)
 
 
-class _UniqueKeyLoader(yaml.SafeLoader):
-    """SafeLoader that rejects a field written twice in the same block.
-
-    Plain PyYAML silently keeps the last value, which would hide a mistake
-    such as two different air gaps in one file.
-    """
-
-    def construct_mapping(self, node: yaml.MappingNode, deep: bool = False) -> dict:
-        seen = set()
-        for key_node, _ in node.value:
-            if not isinstance(key_node, yaml.ScalarNode):
-                continue
-            key = key_node.value
-            if key in seen:
-                raise yaml.constructor.ConstructorError(
-                    None, None, f"field {key!r} appears twice", key_node.start_mark
-                )
-            seen.add(key)
-        return super().construct_mapping(node, deep=deep)
-
-
-# PyYAML follows YAML 1.1, where 036 is octal (30) and 1:30 is base 60 (90).
-# A design file must mean what it says, so only plain decimal numbers are
-# read as numbers; anything else arrives as text and is rejected by the
-# field checks.
-_INT = re.compile(r"^[-+]?(0|[1-9][0-9]*)$")
-_FLOAT = re.compile(
-    r"""^(?:[-+]?(?:[0-9]+\.[0-9]*(?:[eE][-+]?[0-9]+)?
-                  |\.[0-9]+(?:[eE][-+]?[0-9]+)?
-                  |[0-9]+[eE][-+]?[0-9]+)
-           |[-+]?\.(?:inf|Inf|INF)
-           |\.(?:nan|NaN|NAN))$""",
-    re.VERBOSE,
-)
-_NUMBER_TAGS = ("tag:yaml.org,2002:int", "tag:yaml.org,2002:float")
-
-_UniqueKeyLoader.yaml_implicit_resolvers = {
-    first: [(tag, pattern) for tag, pattern in resolvers if tag not in _NUMBER_TAGS]
-    for first, resolvers in yaml.SafeLoader.yaml_implicit_resolvers.items()
-}
-_UniqueKeyLoader.add_implicit_resolver(_NUMBER_TAGS[0], _INT, list("-+0123456789"))
-_UniqueKeyLoader.add_implicit_resolver(_NUMBER_TAGS[1], _FLOAT, list("-+0123456789."))
-
-
 def load_design(path: str | Path) -> Design:
     """Load and check a YAML design file.
 
@@ -157,7 +117,7 @@ def load_design(path: str | Path) -> Design:
         raise fail("is a folder, not a design file")
 
     try:
-        data = yaml.load(text, Loader=_UniqueKeyLoader)
+        data = yaml.load(text, Loader=StrictLoader)
     except yaml.YAMLError as error:
         mark = getattr(error, "problem_mark", None)
         where = f" at line {mark.line + 1}, column {mark.column + 1}" if mark else ""
@@ -243,13 +203,15 @@ def design_from_dict(data: Any, source: str | None = None) -> Design:
         stack_length_mm=block.number("stack_length_mm", gt=0),
         magnet_overhang_mm=block.number("magnet_overhang_mm", default=0.0, ge=0),
         skew_deg=block.number("skew_deg", default=0.0, ge=0),
-        end_winding_overhang_mm=block.number("end_winding_overhang_mm", default=None, ge=0),
+        # A coil must cross the end of its tooth, so it always stands out
+        # from the stack; leaving the field empty asks for an estimate.
+        end_winding_overhang_mm=block.number("end_winding_overhang_mm", default=None, gt=0),
     )
 
     block = root.section("magnet")
     magnet = dict(
         material=block.text("material"),
-        temperature_C=block.number("temperature_C", gt=ABSOLUTE_ZERO_C),
+        temperature_C=_temperature(block),
     )
 
     block = root.section("winding")
@@ -260,8 +222,15 @@ def design_from_dict(data: Any, source: str | None = None) -> Design:
         parallel_strands=block.integer("parallel_strands", default=1, ge=1),
         conductor=block.text("conductor"),
         connection=block.text("connection", choices=CONNECTIONS),
-        temperature_C=block.number("temperature_C", gt=ABSOLUTE_ZERO_C),
+        temperature_C=_temperature(block),
     )
+    if winding["connection"] == "delta":
+        block.warn(
+            "connection",
+            "the studies take the phase currents as sinusoidal and leave out the "
+            "third-harmonic current that the phase back-EMFs drive round a closed delta, "
+            "with its copper loss and drag; star has no such current",
+        )
     bare, overall = winding["wire_diameter_mm"], winding["insulated_diameter_mm"]
     if bare is not None and overall is not None and overall <= bare:
         problems.append(
@@ -313,6 +282,26 @@ def design_from_dict(data: Any, source: str | None = None) -> Design:
     if winding_problems:
         raise DesignError(winding_problems, source, warnings)
     return dataclasses.replace(design, warnings=tuple(warnings))
+
+
+def _temperature(block: Section) -> float | None:
+    """Read ``temperature_C`` of a block, within ``TEMPERATURE_RANGE_C``."""
+    value = block.number("temperature_C")
+    low, high = TEMPERATURE_RANGE_C
+    if value is not None and not low <= value <= high:
+        # repr, so that a value just outside does not print as the limit.
+        block.problems.append(
+            Problem(
+                f"{block.path}.temperature_C",
+                f"must be between {low:g} and {high:g} degrees Celsius, got {value!r}. The "
+                f"range is a sanity bound, set by where the straight line for copper "
+                f"resistance is still reasonable; a magnet's straight line holds only up to "
+                f"its grade's working temperature, which the material library does not "
+                f"store yet",
+            )
+        )
+        return None
+    return value
 
 
 def _check_slot_fill(design: Design, warnings: list[Problem]) -> list[Problem]:

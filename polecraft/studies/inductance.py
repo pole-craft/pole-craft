@@ -178,13 +178,19 @@ def inductance(
     12th harmonic and above. ``materials`` are as for ``build_problem``;
     ``solver`` is as for ``solve``.
 
-    Raises ValueError if ``current`` is not a finite number above 0, or
-    ``points`` is under 1.
+    Raises ValueError if ``current`` is not a finite number above 0,
+    ``points`` is under 1, or the coil's sizes cannot give an end-turn
+    estimate; all of these are checked before any field is solved.
     """
     if not (math.isfinite(current) and current > 0.0):
         raise ValueError(f"current must be a finite number of amperes above 0, not {current}")
     if points < 1:
         raise ValueError(f"points must be at least 1, not {points}")
+    # Before the solves, so that a coil it cannot handle costs no field solve.
+    try:
+        ends: EndWinding | None = end_winding_inductance(machine)
+    except NotImplementedError:
+        ends = None
     layout = machine.symmetry()
     pole_pairs = layout.poles * layout.periods // 2
     angles = mesh.rotor_angle + 2.0 * math.pi / pole_pairs * np.arange(points) / points
@@ -215,10 +221,6 @@ def inductance(
     by_q = np.array(linkage["q"])
     i_d = np.array(applied["d"])[:, 0]
     i_q = np.array(applied["q"])[:, 1]
-    try:
-        ends: EndWinding | None = end_winding_inductance(machine)
-    except NotImplementedError:
-        ends = None
     return Inductance(
         angles=angles,
         current=float(current),

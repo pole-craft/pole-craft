@@ -49,7 +49,7 @@ VALID_DESIGN: dict[str, Any] = {
         "turns_per_coil": 30,
         "parallel_strands": 2,
         "conductor": "copper",
-        "connection": "delta",
+        "connection": "star",
         "temperature_C": 90.0,
     },
     "steel": {"stator": "M250-35A", "rotor": "S235", "stacking_factor": 0.97},

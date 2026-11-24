@@ -119,6 +119,32 @@ def test_at_least_one_point_is_needed() -> None:
         inductance(machine, None, MATERIALS, 1.0, points=0)
 
 
+def test_end_turns_are_worked_out_before_any_field_is_solved() -> None:
+    # A design that came past the loader with no end overhang at all: the
+    # end-turn estimate cannot be made, and that must be said before the
+    # solves, not after them. With no mesh, a solve would fail differently.
+    machine = machine_of("qdd_outer_12s10p")
+    design = machine.design
+    flat = dataclasses.replace(
+        design, axial=dataclasses.replace(design.axial, end_winding_overhang_mm=0.0)
+    )
+    with pytest.raises(ValueError, match="end overhang must be a positive length"):
+        inductance(machine_for(flat), None, MATERIALS, 10.0)
+
+
+def test_end_turn_failure_costs_no_solve(small: dict, monkeypatch: pytest.MonkeyPatch) -> None:
+    def solved(*arguments: object, **keywords: object) -> None:
+        pytest.fail("solved before the end turns were checked")
+
+    monkeypatch.setattr("polecraft.studies.inductance.solve_angles", solved)
+    design = small["machine"].design
+    flat = dataclasses.replace(
+        design, axial=dataclasses.replace(design.axial, end_winding_overhang_mm=0.0)
+    )
+    with pytest.raises(ValueError, match="end overhang"):
+        inductance(machine_for(flat), small["mesh"], MATERIALS, 10.0, points=1)
+
+
 # Known answers
 
 
@@ -217,9 +243,11 @@ def test_end_turns_add_a_few_percent(reference: dict, small: dict, at_10: Induct
     ends = at_10.end_winding
     assert ends.estimate == end_winding_inductance(reference["machine"]).estimate
     assert at_10.d == at_10.d_2d + ends.estimate and at_10.q == at_10.q_2d + ends.estimate
-    assert 0.005 < ends.estimate / at_10.q_2d < 0.06
+    # 6.9 uH on 0.61 mH; the short 12-slot motor's wider coils add more,
+    # 5.7 uH on 0.157 mH.
+    assert ends.estimate / at_10.q_2d == pytest.approx(0.0113, rel=0.1)
     other = run(small, 10.0, points=1)
-    assert 0.005 < other.end_winding.estimate / other.q_2d < 0.06
+    assert other.end_winding.estimate / other.q_2d == pytest.approx(0.0365, rel=0.1)
 
 
 def test_machine_without_coil_shape_has_no_end_turns(small: dict) -> None:

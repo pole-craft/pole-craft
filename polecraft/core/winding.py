@@ -351,16 +351,31 @@ class PhaseWinding:
         return 2.0 * phase if self.connection == "star" else 2.0 * phase / 3.0
 
     def line_current(self, phase_current: float) -> float:
-        """Terminal current for a phase current; sqrt 3 times larger in delta."""
+        """Terminal current for a phase current; sqrt 3 times larger in delta.
+
+        Holds for the amplitude (or RMS value) of the fundamental of a
+        balanced set. Third harmonics are alike in all three phases: in
+        delta they flow round the loop and never reach the terminals.
+        """
         return phase_current * (math.sqrt(3.0) if self.connection == "delta" else 1.0)
 
     def line_voltage(self, phase_voltage: float) -> float:
-        """Voltage between terminals for a phase voltage; sqrt 3 times larger in star."""
+        """Voltage between terminals for a phase voltage; sqrt 3 times larger in star.
+
+        Holds for the amplitude (or RMS value) of the fundamental of a
+        balanced set. Third harmonics are alike in all three phases: in
+        star they cancel between any two terminals.
+        """
         return phase_voltage * (math.sqrt(3.0) if self.connection == "star" else 1.0)
 
-    def copper_loss(self, phase_current: float, temperature: float | None = None) -> float:
-        """Resistive loss of all three phases in watts, for an RMS phase current."""
-        return 3.0 * phase_current**2 * self.resistance(temperature)
+    def copper_loss(self, rms_phase_current: float, temperature: float | None = None) -> float:
+        """Resistive loss of all three phases in watts, 3 I^2 R, for an RMS phase current.
+
+        The studies and ``Machine.excitation`` take the peak phase current
+        instead: for sinusoidal currents of peak I, pass I / sqrt 2. Passing
+        the peak gives twice the loss.
+        """
+        return 3.0 * rms_phase_current**2 * self.resistance(temperature)
 
 
 def phase_winding(machine: Machine, conductor: Conductor | None = None) -> PhaseWinding:
@@ -440,11 +455,15 @@ def _neumann(
 ) -> float:
     """Sum over all pairs of segments of (step . other step) / distance, by the midpoint rule.
 
-    Distances under ``nearest`` are raised to it. Times mu0 / (4 pi) this is
-    Neumann's mutual inductance of the two sets of segments, in H.
+    Times mu0 / (4 pi) this is Neumann's mutual inductance of the two sets
+    of segments, in H. ``nearest`` is for two sets that stand for the same
+    conductor, or for a conductor and its mirror image where the two meet:
+    a conductor acts on itself as two filaments a geometric mean distance
+    apart, so every distance d becomes sqrt(d^2 + nearest^2). Sets that
+    stand for different conductors take the default, 0: plain distances.
     """
     distance = np.linalg.norm(middles[:, None, :] - other_middles[None, :, :], axis=2)
-    return float(np.sum((steps @ other_steps.T) / np.maximum(distance, nearest)))
+    return float(np.sum((steps @ other_steps.T) / np.hypot(distance, nearest)))
 
 
 def loop_inductance(
@@ -456,11 +475,12 @@ def loop_inductance(
     segments, shape (n, 3), in metres. The result is the mean of the mutual
     inductances of every pair of loops (Neumann's formula, by the midpoint
     rule): the inductance of one turn of a conductor whose cross-section the
-    filaments share out, so a coil of N such turns has N^2 times it. Within a
-    loop, distances are not allowed below the geometric mean distance of a
-    square of side ``cell`` (the cross-section each filament stands for),
-    which stands in for the conductor's own size. Segments must be short
-    against the distance between neighbouring filaments.
+    filaments share out, so a coil of N such turns has N^2 times it. A loop
+    with itself is taken as two copies of it set apart by the geometric mean
+    distance of a square of side ``cell`` (the cross-section each filament
+    stands for), which stands in for the conductor's own size. Segments must
+    be short against that distance and against the distance between
+    neighbouring filaments.
     """
     if not loops:
         raise ValueError("at least one loop is needed")
@@ -683,11 +703,23 @@ def end_turn_inductance(
     for sign in (1.0, -1.0):
         plane = sign * half_length
         at_this_end = sign * all_ends_middle[:, 2] > half_length
-        image_middle = all_ends_middle[at_this_end].copy()
+        middle, step_here = all_ends_middle[at_this_end], all_ends_step[at_this_end]
+        owner = end_owner[at_this_end]
+        image_middle = middle.copy()
         image_middle[:, 2] = 2.0 * plane - image_middle[:, 2]
-        image_step = all_ends_step[at_this_end] * np.array([1.0, 1.0, -1.0])
-        face += _neumann(all_ends_middle[at_this_end], all_ends_step[at_this_end],
-                         image_middle, image_step, nearest)
+        image_step = step_here * np.array([1.0, 1.0, -1.0])
+        for k in range(count):
+            mine = owner == k
+            # A corner starts on the face, so a filament runs into its own
+            # image there, in line with it: the conductor's cross-section
+            # against itself, set apart by its geometric mean distance. The
+            # images of the other filaments are other conductors and take
+            # plain distances. They stay a filament spacing away only while
+            # the overhang is not small against the coil thickness (about
+            # half of it); the estimate is not meant for less.
+            for theirs, closest in ((mine, nearest), (~mine, 0.0)):
+                face += _neumann(middle[mine], step_here[mine],
+                                 image_middle[theirs], image_step[theirs], closest)
     face *= MU0 / (4.0 * math.pi) / count**2
     return EndTurns(air=total - per_metre * stack_length, face=face)
 

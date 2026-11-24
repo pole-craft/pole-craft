@@ -15,7 +15,8 @@ steel saturated or not. The two agree to a few tenths of a percent and come
 closer with a finer mesh.
 
 Values are those of the 2D model times the stack length, with no correction
-for the ends of a short machine.
+for the ends of a short machine. The phase currents are pure sinusoids: the
+third-harmonic current that circulates in a delta connection is left out.
 """
 
 from __future__ import annotations

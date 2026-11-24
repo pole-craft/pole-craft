@@ -951,6 +951,21 @@ def test_stepping_needs_angles_and_a_problem_on_the_turned_mesh(pole: dict, ring
         solve_angles(pole["mesh"], [0.1], lambda turned: ring_problem(ring, ring["mesh"]))
 
 
+@pytest.mark.parametrize("spacings", [0.3, 1.0, 4.3])
+def test_stepping_refuses_a_whole_machine_left_unturned(ring: dict, spacings: float) -> None:
+    # A whole machine has no copies, so its node count is the same at every
+    # angle: only the positions tell a stale problem from the turned one.
+    mesh = ring["mesh"]
+    stale = ring_problem(ring, mesh)
+    angle = spacings * step_angle(mesh)
+    assert len(rotate(mesh, angle).nodes) == len(stale.nodes)
+    with pytest.raises(ValueError, match="turned mesh"):
+        solve_angles(mesh, [angle], lambda turned: stale)
+    # Where the rotor has not moved the same problem is the right one.
+    run = solve_angles(mesh, [0.0], lambda turned: stale)
+    assert run.steps[0].problem is stale
+
+
 def test_stepping_reports_its_timing(pole: dict) -> None:
     run = ring_run(pole, ring_angles(pole)[:3], warm=True)
     report = run.timing_report()

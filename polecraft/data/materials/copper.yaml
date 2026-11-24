@@ -1,7 +1,12 @@
+# The International Annealed Copper Standard defines three numbers at 20 C:
+# conductivity 58 m/(ohm mm2), which is the resistivity below, temperature
+# coefficient 0.00393 per kelvin, and density 8.89 g/cm3. Copied from NBS
+# Handbook 100, Copper Wire Tables (1966), part I section 1.1 d ("Density of
+# Copper", page 4) and the data listed there for tables 10 to 14.
 name: copper
 kind: conductor
 description: Annealed copper winding wire.
-source: International Annealed Copper Standard (IEC 60028), 20 C. Standard values for pure annealed copper; enamelled wire from a maker may differ slightly.
+source: International Annealed Copper Standard (IEC 60028), 20 C, as given in NBS Handbook 100, Copper Wire Tables (1966). Standard values for pure annealed copper; enamelled wire from a maker may differ slightly.
 resistivity_ohm_m: 1.7241e-8
 temperature_coefficient_per_K: 0.00393
-density_kg_m3: 8960
+density_kg_m3: 8890

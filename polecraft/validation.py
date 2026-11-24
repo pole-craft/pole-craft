@@ -15,8 +15,11 @@ from __future__ import annotations
 import difflib
 import math
 import numbers
+import re
 from dataclasses import dataclass
 from typing import Any, Iterable, Sequence
+
+import yaml
 
 # Marks a field that has no default and so must be present in the file.
 REQUIRED: Any = object()
@@ -36,6 +39,52 @@ class Problem:
 def warning_text(warning: Problem, source: str | None = None) -> str:
     """One warning as a line of text, in the form problems are reported in."""
     return f"{source or 'design'}: warning: {warning}"
+
+
+class StrictLoader(yaml.SafeLoader):
+    """YAML loader for design and material files.
+
+    Rejects a field written twice in the same block: plain PyYAML silently
+    keeps the last value, which would hide a mistake such as two different
+    air gaps in one file. Reads only plain decimal numbers as numbers.
+    """
+
+    def construct_mapping(self, node: yaml.MappingNode, deep: bool = False) -> dict:
+        seen = set()
+        for key_node, _ in node.value:
+            if not isinstance(key_node, yaml.ScalarNode):
+                continue
+            key = key_node.value
+            if key in seen:
+                raise yaml.constructor.ConstructorError(
+                    None, None, f"field {key!r} appears twice", key_node.start_mark
+                )
+            seen.add(key)
+        return super().construct_mapping(node, deep=deep)
+
+
+# PyYAML follows YAML 1.1, where 036 is octal (30) and 1:30 is base 60 (90).
+# It also reads 2e-8 as text, because it wants a decimal point. A file must
+# mean what it says, so plain decimal numbers, with or without a point, are
+# read as numbers; anything else arrives as text and is rejected by the
+# field checks.
+_INT = re.compile(r"^[-+]?(0|[1-9][0-9]*)$")
+_FLOAT = re.compile(
+    r"""^(?:[-+]?(?:[0-9]+\.[0-9]*(?:[eE][-+]?[0-9]+)?
+                  |\.[0-9]+(?:[eE][-+]?[0-9]+)?
+                  |[0-9]+[eE][-+]?[0-9]+)
+           |[-+]?\.(?:inf|Inf|INF)
+           |\.(?:nan|NaN|NAN))$""",
+    re.VERBOSE,
+)
+_NUMBER_TAGS = ("tag:yaml.org,2002:int", "tag:yaml.org,2002:float")
+
+StrictLoader.yaml_implicit_resolvers = {
+    first: [(tag, pattern) for tag, pattern in resolvers if tag not in _NUMBER_TAGS]
+    for first, resolvers in yaml.SafeLoader.yaml_implicit_resolvers.items()
+}
+StrictLoader.add_implicit_resolver(_NUMBER_TAGS[0], _INT, list("-+0123456789"))
+StrictLoader.add_implicit_resolver(_NUMBER_TAGS[1], _FLOAT, list("-+0123456789."))
 
 
 class DesignError(ValueError):

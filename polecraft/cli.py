@@ -19,8 +19,9 @@ from polecraft.validation import DesignError, warning_text
 # require_gmsh() before anything else.
 GMSH_NOTE = 'Needs Gmsh: pip install "polecraft[mesh]"'
 
-# What the solve command uses until the package has real material data: a
-# steel curve made from a formula, and a magnet given by two numbers.
+# What the solve command uses until it takes a design's materials from the
+# material library: a steel curve made from a formula, and a magnet given by
+# two numbers.
 STAND_IN_STEEL = "generic_35A_placeholder"
 STAND_IN_REMANENCE = 1.2  # tesla
 STAND_IN_PERMEABILITY = 1.05
@@ -55,8 +56,8 @@ def _parser() -> argparse.ArgumentParser:
     solve = commands.add_parser(
         "solve", help="solve the field of a design and save a picture of it (needs Gmsh)",
         description="Mesh a design, solve its magnetic field at rotor angle 0, print torque and "
-        "flux linkage and save a picture of the field. Real material data is not in the "
-        "package yet: the steel and the magnet are stand-ins, so the numbers show how the tool "
+        "flux linkage and save a picture of the field. It does not use the material library "
+        "yet: the steel and the magnet are stand-ins, so the numbers show how the tool "
         "behaves, not how the motor performs. " + GMSH_NOTE,
     )
     solve.add_argument("design", type=Path, help="design file (YAML)")

@@ -1,15 +1,23 @@
 # PLACEHOLDER. THIS IS NOT A DATASHEET VALUE.
 #
 # The remanence and recoil permeability are the stand-in numbers that
-# `polecraft solve` has used so far, and the two temperature coefficients are
-# round numbers in the range usually quoted for sintered NdFeB. None of them
+# `polecraft solve` has used so far, and the temperature coefficient is a
+# round number in the range usually quoted for sintered NdFeB. None of them
 # describes any grade or maker. Real grades are added from supplier
-# datasheets, which give the remanence and the coercivity at 20 C and their
-# coefficients.
+# datasheets.
 #
-# Numbers are at 20 C. The coefficients are fractions per kelvin about 20 C:
+# Numbers are at 20 C. The coefficient is a fraction per kelvin about 20 C:
 # -0.0012 means the remanence falls 0.12 % for each kelvin of rise. The
-# coercivity here is Hcb on the recoil line, Br / (mu_r mu0).
+# recoil permeability is taken as constant with temperature, so the
+# coercivity on the recoil line, Hcb = Br / (mu_r mu0), follows the remanence
+# and has no coefficient of its own.
+#
+# A datasheet also gives the intrinsic coercivity Hcj and its coefficient,
+# which is several times larger than the remanence's. An entry made from a
+# datasheet may carry them as `intrinsic_coercivity_A_per_m` and
+# `intrinsic_coercivity_temp_coefficient_per_K`. They are kept for a later
+# check against demagnetisation and are not used in the field solution. This
+# placeholder gives neither, because it has no datasheet to take them from.
 name: generic_NdFeB_placeholder
 kind: magnet
 description: Placeholder sintered NdFeB magnet. Not a datasheet value.
@@ -17,4 +25,3 @@ source: none; stand-in numbers, not from any datasheet
 remanence_T: 1.2
 relative_permeability: 1.05
 remanence_temp_coefficient_per_K: -0.0012
-coercivity_temp_coefficient_per_K: -0.0045
