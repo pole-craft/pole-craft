@@ -1,4 +1,4 @@
-"""Results read off a solved field: flux linkage and torque."""
+"""Results read off a solved field: flux linkage, torque and core loss."""
 
 import cmath
 import dataclasses
@@ -8,11 +8,20 @@ from pathlib import Path
 import numpy as np
 import pytest
 
-from polecraft.core.materials import AIR, MU0, LinearMaterial, Magnet, load_material
+from polecraft.core.materials import (
+    AIR,
+    MU0,
+    CoreLossCoefficients,
+    LinearMaterial,
+    Magnet,
+    load_material,
+)
 from polecraft.core.post import (
+    core_loss_density,
     flux_linkage,
     gap_flux_density,
     linkage_per_metre,
+    material_flux_density,
     ring_torque_per_metre,
     torque,
 )
@@ -686,3 +695,232 @@ def test_motor_slice_and_whole_machine_give_the_same_results() -> None:
     assert part_torque == pytest.approx(whole_torque, rel=2e-3)
     for phase in "ABC":
         assert part_linked[phase] == pytest.approx(whole_linked[phase], rel=2e-3, abs=2e-6)
+
+
+# Core loss from flux density waveforms
+
+# Coefficients given by hand, of the size of a 0.35 mm sheet's.
+SHEET = CoreLossCoefficients(hysteresis=0.017, eddy=5e-5, excess=4e-4)
+# Mean of |cos|^1.5 over a turn, by a fine sum.
+MEAN_COS_15 = float(
+    np.mean(np.abs(np.cos(2 * math.pi * (np.arange(200000) + 0.5) / 200000)) ** 1.5)
+)
+
+
+def sine(peak: float, direction: float, samples: int = 48, phase: float = 0.0) -> np.ndarray:
+    """One period of an alternating field along a direction, shape (samples, 1, 2)."""
+    wave = peak * np.sin(2 * math.pi * np.arange(samples) / samples + phase)
+    return wave[:, None, None] * np.array([math.cos(direction), math.sin(direction)])
+
+
+def terms(coefficients: CoreLossCoefficients, frequency: float, peak: float) -> tuple:
+    """The three terms of the loss formula for a sine wave, W/kg."""
+    return (
+        coefficients.hysteresis * frequency * peak**coefficients.hysteresis_exponent,
+        coefficients.eddy * (frequency * peak) ** 2,
+        coefficients.excess * (frequency * peak) ** 1.5,
+    )
+
+
+@pytest.mark.parametrize("frequency", [50.0, 400.0, 1000.0])
+@pytest.mark.parametrize("peak", [0.3, 1.0, 1.6])
+@pytest.mark.parametrize("direction", [0.0, 0.7, 2.5])
+def test_sine_wave_gives_the_loss_formula(frequency, peak, direction) -> None:
+    hysteresis, eddy, excess = core_loss_density(sine(peak, direction), 1 / frequency, SHEET)
+    expected = terms(SHEET, frequency, peak)
+    assert hysteresis[0] == pytest.approx(expected[0], rel=1e-12)
+    assert eddy[0] == pytest.approx(expected[1], rel=1e-12)
+    # The mean of |dB/dt|^1.5 is a sum over 48 samples of a curve with corners.
+    assert excess[0] == pytest.approx(expected[2], rel=2e-4)
+    assert hysteresis[0] + eddy[0] + excess[0] == pytest.approx(
+        float(SHEET.loss(frequency, peak)), rel=1e-4
+    )
+
+
+def test_sine_wave_with_another_hysteresis_exponent() -> None:
+    sheet = CoreLossCoefficients(0.02, 5e-5, 4e-4, hysteresis_exponent=1.8)
+    hysteresis, _, _ = core_loss_density(sine(1.3, 0.4), 1 / 200.0, sheet)
+    assert hysteresis[0] == pytest.approx(0.02 * 200.0 * 1.3**1.8, rel=1e-12)
+
+
+def test_loss_terms_scale_with_frequency() -> None:
+    wave = sine(1.2, 0.3) + 0.2 * sine(1.0, 1.9, phase=0.5) * np.array([1.0, -1.0])
+    slow = core_loss_density(wave, 1 / 50.0, SHEET)
+    fast = core_loss_density(wave, 1 / 400.0, SHEET)
+    for power, low, high in zip((1.0, 2.0, 1.5), slow, fast):
+        assert high[0] == pytest.approx(8.0**power * low[0], rel=1e-12)
+
+
+def test_constant_field_has_no_loss() -> None:
+    wave = np.broadcast_to(np.array([0.9, -1.4]), (48, 3, 2))
+    for periodic in (True, False):
+        for term in core_loss_density(wave, 0.01, SHEET, periodic=periodic):
+            assert np.all(np.abs(term) < 1e-20)
+
+
+def test_steady_field_under_the_swing_changes_nothing() -> None:
+    plain = core_loss_density(sine(0.4, 0.6), 0.005, SHEET)
+    offset = core_loss_density(sine(0.4, 0.6) + np.array([1.1, 0.3]), 0.005, SHEET)
+    for a, b in zip(plain, offset):
+        assert b[0] == pytest.approx(a[0], rel=1e-9)
+
+
+def test_peak_between_samples_is_missed_by_no_more_than_the_spacing_allows() -> None:
+    # 50 samples and a shifted phase: no sample falls on the peak.
+    hysteresis, eddy, _ = core_loss_density(sine(1.0, 0.0, 50, phase=0.3), 0.01, SHEET)
+    assert eddy[0] == pytest.approx(5e-5 * 100.0**2, rel=1e-12)
+    full = 0.017 * 100.0
+    assert full * math.cos(math.pi / 50) ** 2 <= hysteresis[0] <= full * (1 + 1e-12)
+
+
+def test_harmonics_add_to_the_eddy_loss_by_their_order_squared() -> None:
+    samples = 96
+    turn = 2 * math.pi * np.arange(samples) / samples
+    wave = np.zeros((samples, 1, 2))
+    wave[:, 0, 0] = 1.0 * np.sin(turn) + 0.15 * np.sin(3 * turn + 0.4)
+    wave[:, 0, 1] = 0.05 * np.cos(7 * turn)
+    _, eddy, _ = core_loss_density(wave, 1 / 100.0, SHEET)
+    expected = 5e-5 * 100.0**2 * (1.0**2 + 9 * 0.15**2 + 49 * 0.05**2)
+    assert eddy[0] == pytest.approx(expected, rel=1e-12)
+
+
+def test_turning_field_counts_as_two_alternating_fields() -> None:
+    turn = 2 * math.pi * np.arange(48) / 48
+    wave = 1.1 * np.stack([np.cos(turn), np.sin(turn)], axis=1)[:, None, :]
+    hysteresis, eddy, excess = core_loss_density(wave, 1 / 100.0, SHEET)
+    alternating = terms(SHEET, 100.0, 1.1)
+    # The swing along any axis is read from 48 samples of the circle.
+    assert hysteresis[0] == pytest.approx(2 * alternating[0], rel=2 * (1 - math.cos(math.pi / 48)))
+    assert eddy[0] == pytest.approx(2 * alternating[1], rel=1e-12)
+    # |dB/dt| is constant, not a rectified sine.
+    assert excess[0] == pytest.approx(alternating[2] / MEAN_COS_15, rel=1e-9)
+
+
+def test_elliptical_field_uses_its_two_axes_whatever_the_frame() -> None:
+    turn = 2 * math.pi * np.arange(48) / 48
+    ellipse = np.stack([1.2 * np.cos(turn), 0.5 * np.sin(turn)], axis=1)
+    results = []
+    for angle in (0.0, 0.9, 2.2):
+        c, s = math.cos(angle), math.sin(angle)
+        turned = ellipse @ np.array([[c, s], [-s, c]])
+        results.append([term[0] for term in core_loss_density(turned[:, None, :], 0.01, SHEET)])
+    assert results[0][0] == pytest.approx(0.017 * 100.0 * (1.2**2 + 0.5**2), rel=1e-12)
+    assert results[0][1] == pytest.approx(5e-5 * 100.0**2 * (1.2**2 + 0.5**2), rel=1e-12)
+    for other in results[1:]:
+        assert other == pytest.approx(results[0], rel=1e-9)
+
+
+def test_open_window_takes_rates_from_differences() -> None:
+    intervals = 48
+    turn = 2 * math.pi * np.arange(intervals + 1) / intervals
+    wave = np.zeros((intervals + 1, 1, 2))
+    wave[:, 0, 1] = 1.4 * np.sin(turn)
+    hysteresis, eddy, excess = core_loss_density(wave, 1 / 200.0, SHEET, periodic=False)
+    expected = terms(SHEET, 200.0, 1.4)
+    x = math.pi / intervals
+    assert hysteresis[0] == pytest.approx(expected[0], rel=1e-12)
+    assert eddy[0] == pytest.approx(expected[1] * (math.sin(x) / x) ** 2, rel=1e-12)
+    assert excess[0] == pytest.approx(expected[2], rel=3e-3)
+
+
+def test_open_window_need_not_close() -> None:
+    # A steady rise of 0.5 T in 2 ms: dB/dt = 250 T/s throughout.
+    wave = np.zeros((11, 1, 2))
+    wave[:, 0, 0] = np.linspace(0.2, 0.7, 11)
+    hysteresis, eddy, excess = core_loss_density(wave, 0.002, SHEET, periodic=False)
+    assert eddy[0] == pytest.approx(5e-5 / (2 * math.pi**2) * 250.0**2, rel=1e-12)
+    assert excess[0] == pytest.approx(
+        4e-4 / ((2 * math.pi) ** 1.5 * MEAN_COS_15) * 250.0**1.5, rel=1e-9
+    )
+    assert hysteresis[0] == pytest.approx(0.017 * 500.0 * 0.25**2, rel=1e-12)
+
+
+def test_core_loss_density_refuses_bad_input() -> None:
+    with pytest.raises(ValueError, match="shape"):
+        core_loss_density(np.zeros((48, 2)), 0.01, SHEET)
+    with pytest.raises(ValueError, match="duration"):
+        core_loss_density(sine(1.0, 0.0), 0.0, SHEET)
+    with pytest.raises(ValueError, match="too few"):
+        core_loss_density(sine(1.0, 0.0, 3), 0.01, SHEET)
+    with pytest.raises(ValueError, match="too few"):
+        core_loss_density(sine(1.0, 0.0, 1), 0.01, SHEET, periodic=False)
+
+
+def steel_block(field: tuple[float, float], turned: float = 0.0) -> tuple:
+    """A 20 mm by 10 mm steel block in a uniform field, solved; turned about the origin."""
+    flat, triangles = grid(8, 4, 0.02, 0.01)
+    edge = np.flatnonzero(
+        np.isclose(flat[:, 0], 0.0)
+        | np.isclose(flat[:, 0], 0.02)
+        | np.isclose(flat[:, 1], 0.0)
+        | np.isclose(flat[:, 1], 0.01)
+    )
+    c, s = math.cos(turned), math.sin(turned)
+    nodes = flat @ np.array([[c, s], [-s, c]])
+    # B = (dA/dy, -dA/dx): this potential on the outline gives the field throughout.
+    potential = field[0] * nodes[:, 1] - field[1] * nodes[:, 0]
+    problem = Problem(
+        nodes=nodes,
+        triangles=triangles,
+        materials=(LinearMaterial(2000.0),),
+        fixed_nodes=edge,
+        fixed_values=potential[edge],
+    )
+    return problem, solve(problem)
+
+
+def test_block_in_uniform_sine_field_matches_the_loss_formula() -> None:
+    frequency, peak, density = 400.0, 1.3, 7650.0
+    wave = peak * np.sin(2 * math.pi * np.arange(48) / 48)
+    steps = [steel_block((0.6 * b, 0.8 * b)) for b in wave]
+    triangles = np.arange(len(steps[0][0].triangles))
+    field, turn = material_flux_density(steps, triangles)
+    assert np.array_equal(turn, np.zeros_like(turn))
+    assert np.allclose(np.hypot(field[..., 0], field[..., 1]), np.abs(wave)[:, None], atol=1e-9)
+    _, area = shape_gradients(steps[0][0].nodes, steps[0][0].triangles)
+    mass = density * area * 0.05  # 50 mm deep
+    assert mass.sum() == pytest.approx(7650.0 * 0.02 * 0.01 * 0.05)
+    loss = sum(mass @ term for term in core_loss_density(field, 1 / frequency, SHEET))
+    assert loss == pytest.approx(mass.sum() * float(SHEET.loss(frequency, peak)), rel=1e-4)
+    slow = sum(mass @ term for term in core_loss_density(field, 1 / 50.0, SHEET))
+    assert slow == pytest.approx(mass.sum() * float(SHEET.loss(50.0, peak)), rel=1e-4)
+
+
+def test_block_in_constant_field_has_no_loss() -> None:
+    steps = [steel_block((0.9, -0.4)) for _ in range(8)]
+    field, _ = material_flux_density(steps, np.arange(len(steps[0][0].triangles)))
+    for term in core_loss_density(field, 0.01, SHEET):
+        assert np.all(term < 1e-12)
+
+
+def test_block_turning_in_a_steady_field_sees_a_turning_field() -> None:
+    angles = 2 * math.pi * np.arange(48) / 48
+    steps = [steel_block((1.0, 0.0), turned=angle) for angle in angles]
+    triangles = np.arange(len(steps[0][0].triangles))
+    field, turn = material_flux_density(steps, triangles)
+    assert np.allclose(turn, angles[:, None], atol=1e-9)
+    # In the block's frame the field goes round backwards.
+    assert np.allclose(field[..., 0], np.cos(angles)[:, None], atol=1e-9)
+    assert np.allclose(field[..., 1], -np.sin(angles)[:, None], atol=1e-9)
+    _, eddy, _ = core_loss_density(field, 0.01, SHEET)
+    assert eddy == pytest.approx(2 * 5e-5 * 100.0**2, rel=1e-9)
+
+
+def test_block_turning_with_its_field_has_no_loss() -> None:
+    angles = 2 * math.pi * np.arange(48) / 48
+    steps = [steel_block((math.cos(a), math.sin(a)), turned=a) for a in angles]
+    field, _ = material_flux_density(steps, np.arange(len(steps[0][0].triangles)))
+    assert np.allclose(field, [1.0, 0.0], atol=1e-9)
+    for term in core_loss_density(field, 0.01, SHEET):
+        assert np.all(term < 1e-12)
+
+
+def test_material_flux_density_refuses_bad_input() -> None:
+    step = steel_block((1.0, 0.0))
+    with pytest.raises(ValueError, match="at least one"):
+        material_flux_density([], np.arange(3))
+    with pytest.raises(ValueError, match="triangle numbers"):
+        material_flux_density([step], np.ones(len(step[0].triangles), dtype=bool))
+    other = dataclasses.replace(step[0], triangles=step[0].triangles[:, [1, 2, 0]])
+    with pytest.raises(ValueError, match="not those of the first"):
+        material_flux_density([step, (other, step[1])], np.arange(3))

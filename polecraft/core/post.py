@@ -1,4 +1,4 @@
-"""Results read off a solved field: flux linkage and torque.
+"""Results read off a solved field: flux linkage, torque and core loss.
 
 The flux density in every triangle comes with the solution itself. This
 module turns a problem and its solution into the quantities a machine is
@@ -11,7 +11,8 @@ model, times the number of times that part repeats.
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING
+import math
+from typing import TYPE_CHECKING, Sequence
 
 import numpy as np
 from numpy.typing import ArrayLike, NDArray
@@ -20,6 +21,7 @@ from polecraft.core.materials import MU0
 from polecraft.core.solver import shape_gradients
 
 if TYPE_CHECKING:
+    from polecraft.core.materials import CoreLossCoefficients
     from polecraft.core.problem import Problem
     from polecraft.core.solver import Solution
 
@@ -224,3 +226,119 @@ def torque(problem: Problem, solution: Solution) -> float:
     # What turns the inside one way turns the outside the other.
     on_rotor = -on_inside if gap.rotor_outside else on_inside
     return problem.depth * problem.repeats * on_rotor
+
+
+def material_flux_density(
+    steps: Sequence[tuple[Problem, Solution]], triangles: ArrayLike
+) -> tuple[NDArray[np.float64], NDArray[np.float64]]:
+    """Flux density in some triangles over a series of solves, as the material sees it.
+
+    Steel that turns with a rotor sees the field in its own frame, not in
+    the fixed one the solver works in. Each triangle's field is turned back
+    by the angle its first side has turned since the first solve, so a
+    field that only follows the triangle round comes out constant.
+
+    ``steps`` are (problem, solution) pairs in which the listed triangles
+    keep their numbers and corner nodes. Returns the field, shape (steps,
+    triangles, 2) in tesla, and the angle each triangle has turned at each
+    step, shape (steps, triangles), in radians.
+    """
+    triangles = np.asarray(triangles)
+    if triangles.ndim != 1 or (triangles.size and not np.issubdtype(triangles.dtype, np.integer)):
+        raise ValueError("the triangles must be given as a list of triangle numbers")
+    if len(steps) == 0:
+        raise ValueError("give at least one solved step")
+    field = np.empty((len(steps), triangles.size, 2))
+    turn = np.empty((len(steps), triangles.size))
+    corners = None
+    for number, (problem, solution) in enumerate(steps):
+        _check_pair(problem, solution)
+        here = problem.triangles[triangles]
+        if corners is None:
+            corners = here
+        elif not np.array_equal(here, corners):
+            raise ValueError(f"the triangles at step {number} are not those of the first step")
+        side = problem.nodes[here[:, 1]] - problem.nodes[here[:, 0]]
+        turn[number] = np.arctan2(side[:, 1], side[:, 0])
+        field[number] = solution.flux_density[triangles]
+    turn = np.unwrap(turn - turn[0], axis=0)
+    cos, sin = np.cos(turn), np.sin(turn)
+    bx, by = field[..., 0], field[..., 1]
+    return np.stack([cos * bx + sin * by, cos * by - sin * bx], axis=2), turn
+
+
+# Mean of |cos|^1.5 over a turn: it ties the mean of |dB/dt|^1.5 of a sine
+# wave to its peak, so that the excess term gives ke (f B)^1.5 for one.
+_EXCESS_MEAN = math.gamma(1.25) / (math.sqrt(math.pi) * math.gamma(1.75))
+
+
+def core_loss_density(
+    waveform: ArrayLike,
+    duration: float,
+    coefficients: CoreLossCoefficients,
+    periodic: bool = True,
+) -> tuple[NDArray[np.float64], NDArray[np.float64], NDArray[np.float64]]:
+    """Hysteresis, eddy-current and excess loss in W/kg from flux density waveforms.
+
+    ``waveform`` is (Bx, By) in tesla in the material's own frame, shape
+    (samples, places, 2), and ``duration`` the time in seconds it covers.
+    The three results have one value per place. For a sine wave of peak B
+    along any direction, at f = 1 / duration, they are the three terms of
+    the coefficients' formula: kh f B^beta, kc (f B)^2 and ke (f B)^1.5.
+    For other waveforms:
+
+    - Eddy-current loss is kc / (2 pi^2) times the mean of |dB/dt|^2, which
+      is what the sheet formula behind kc says for any waveform slow enough
+      for the field to fill the sheet (no skin effect).
+    - Excess loss is the mean of |dB/dt|^1.5, scaled to agree for a sine.
+    - Hysteresis loss is kh f (Ba^beta + Bb^beta): Ba is half the
+      peak-to-peak swing along the direction in which the field varies
+      most, Bb the same at right angles to it. A field of fixed size that
+      turns round once is so counted as two alternating fields, the usual
+      approximation; the real loss in a turning field differs, and falls
+      near saturation. Smaller loops within the cycle are not counted, and
+      a steady field under the swing is taken to change nothing.
+
+    With ``periodic`` the samples are evenly spaced over one whole period,
+    the last one step short of its end, and the rates of change are exact
+    for every harmonic below half the number of samples. Without it the
+    samples run from the start to the end of the time, both included, and
+    need not close; the rates are differences between neighbours, which
+    lose a little of the fast harmonics (a factor sin(x)^2 / x^2 in the eddy
+    loss, x = pi n / intervals for harmonic n).
+
+    A constant field gives no loss.
+    """
+    b = np.asarray(waveform, dtype=float)
+    if b.ndim != 3 or b.shape[2] != 2:
+        raise ValueError(f"waveform must have shape (samples, places, 2), not {b.shape}")
+    if not (math.isfinite(duration) and duration > 0.0):
+        raise ValueError(f"duration must be a positive time in seconds, not {duration}")
+    samples = len(b)
+    if samples < (4 if periodic else 2):
+        raise ValueError(f"too few samples ({samples}) to take a rate of change from")
+    if periodic:
+        waves = np.fft.rfft(b, axis=0)
+        factor = 1j * np.arange(len(waves)) * (2.0 * math.pi / duration)
+        if samples % 2 == 0:
+            factor[-1] = 0.0  # at half the sampling rate the slope is not known
+        rate = np.fft.irfft(waves * factor[:, None, None], samples, axis=0)
+    else:
+        rate = np.diff(b, axis=0) * ((samples - 1) / duration)
+    frequency = 1.0 / duration
+    squared = (rate**2).sum(axis=2)
+    eddy = coefficients.eddy / (2.0 * math.pi**2) * squared.mean(axis=0)
+    excess = (
+        coefficients.excess / ((2.0 * math.pi) ** 1.5 * _EXCESS_MEAN) * (squared**0.75).mean(axis=0)
+    )
+    # The direction of greatest variation is the main axis of the scatter of
+    # the samples about their mean.
+    centred = b - b.mean(axis=0)
+    x, y = centred[..., 0], centred[..., 1]
+    angle = 0.5 * np.arctan2(2.0 * (x * y).sum(axis=0), (x * x).sum(axis=0) - (y * y).sum(axis=0))
+    cos, sin = np.cos(angle), np.sin(angle)
+    along = 0.5 * np.ptp(cos * x + sin * y, axis=0)
+    across = 0.5 * np.ptp(cos * y - sin * x, axis=0)
+    beta = coefficients.hysteresis_exponent
+    hysteresis = coefficients.hysteresis * frequency * (along**beta + across**beta)
+    return hysteresis, eddy, excess

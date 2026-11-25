@@ -10,6 +10,16 @@ releases.
 - Copper loss study (`polecraft.studies.copper_loss`): the loss of all three
   phases for a peak phase current and a winding temperature, from the DC
   resistance (no skin or proximity effect).
+- Core loss study (`polecraft.studies.core_loss`): hysteresis, eddy-current
+  and excess loss in the steel from the flux density waveform of every
+  triangle over one electrical cycle, with the rotor's steel followed in its
+  own frame. One run gives the loss at any speed (`CoreLoss.at_speed`). The
+  loss is that of the sheet as measured in a sine-wave field: no allowance
+  for stamping or stress, none for a solid rotor yoke, and no eddy currents
+  in the magnets.
+- `core_loss_density` and `material_flux_density` in `polecraft.core.post`:
+  loss per kilogram from any flux density waveform, and the field a turning
+  triangle sees in its own frame.
 
 ## [0.0.4] - 2026-11-24
 
