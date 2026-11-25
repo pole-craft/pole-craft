@@ -21,6 +21,11 @@ releases.
   linkage and mean torque solved on a grid of d and q currents, then
   interpolated at any operating point inside it (`FluxMap.at`) instead of
   solved again. `operating_point` solves a single point.
+- Torque-speed curve (`polecraft.studies.torque_speed`): the most torque at
+  each speed within a peak phase voltage and current, from a flux map, with
+  field weakening above the base speed and the winding's resistance and
+  end-turn inductance included. `phase_limits` turns a drive's DC bus
+  voltage and current limit into phase limits for star or delta.
 - `core_loss_density` and `material_flux_density` in `polecraft.core.post`:
   loss per kilogram from any flux density waveform, and the field a turning
   triangle sees in its own frame.
