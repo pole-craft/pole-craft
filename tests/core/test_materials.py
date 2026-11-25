@@ -735,6 +735,72 @@ def test_intrinsic_coercivity_is_kept_as_data_and_changes_nothing() -> None:
     assert hot.coercivity == plain.at_temperature(120.0).coercivity
 
 
+# Intrinsic coercivity and the knee, for the demagnetisation check. The
+# numbers are made up for the tests, not taken from a datasheet.
+
+
+def knee_magnet(**options) -> Magnet:
+    values = {
+        "remanence": 1.2,
+        "remanence_coefficient": -0.0012,
+        "intrinsic_coercivity": 1.6e6,
+        "intrinsic_coercivity_coefficient": -0.005,
+        "knee_ratio": 0.9,
+        **options,
+    }
+    return Magnet(**values)
+
+
+def test_intrinsic_coercivity_falls_on_its_line() -> None:
+    magnet = knee_magnet()
+    assert magnet.intrinsic_coercivity_at(20.0) == 1.6e6
+    assert magnet.intrinsic_coercivity_at(120.0) == pytest.approx(1.6e6 * 0.5)
+    assert magnet.intrinsic_coercivity_at(-20.0) == pytest.approx(1.6e6 * 1.2)
+    # The magnet taken hot still knows its 20 C value.
+    assert magnet.at_temperature(120.0).intrinsic_coercivity_at(120.0) == pytest.approx(8e5)
+
+
+def test_knee_field_is_the_ratio_of_hcj_at_temperature() -> None:
+    magnet = knee_magnet()
+    assert magnet.knee_field(20.0) == pytest.approx(0.9 * 1.6e6)
+    assert magnet.knee_field(150.0) == pytest.approx(0.9 * 1.6e6 * (1 - 0.005 * 130))
+    assert magnet.knee_field(150.0, knee_ratio=0.8) == pytest.approx(0.8 * 1.6e6 * 0.35)
+
+
+@pytest.mark.parametrize(
+    "options, temperature, message",
+    [
+        ({"intrinsic_coercivity": None, "intrinsic_coercivity_coefficient": None,
+          "knee_ratio": None}, 20.0, "no intrinsic coercivity"),
+        ({"intrinsic_coercivity_coefficient": None}, 80.0, "no temperature coefficient"),
+        ({}, 230.0, "zero or less"),
+        ({}, math.nan, "finite"),
+        ({"knee_ratio": None}, 80.0, "knee of the demagnetisation curve is not known"),
+    ],
+)
+def test_knee_field_needs_its_data(options, temperature, message) -> None:
+    with pytest.raises(ValueError, match=message):
+        knee_magnet(**options).knee_field(temperature)
+
+
+def test_hcj_at_20_c_needs_no_coefficient() -> None:
+    magnet = knee_magnet(intrinsic_coercivity_coefficient=None)
+    assert magnet.knee_field(20.0) == pytest.approx(0.9 * 1.6e6)
+
+
+@pytest.mark.parametrize("ratio", [0.0, -0.5, 1.01, math.nan])
+def test_knee_ratio_must_be_a_fraction(ratio: float) -> None:
+    with pytest.raises(ValueError, match="knee_ratio must be above 0 and at most 1"):
+        knee_magnet(knee_ratio=ratio)
+    with pytest.raises(ValueError, match="knee_ratio must be above 0 and at most 1"):
+        knee_magnet().knee_field(20.0, knee_ratio=ratio)
+
+
+def test_knee_ratio_needs_the_intrinsic_coercivity() -> None:
+    with pytest.raises(ValueError, match="knee_ratio needs intrinsic_coercivity"):
+        Magnet(remanence=1.2, knee_ratio=0.9)
+
+
 def test_magnet_takes_no_coefficient_for_hcb() -> None:
     with pytest.raises(TypeError, match="coercivity_coefficient"):
         Magnet(remanence=1.2, coercivity_coefficient=-0.004)
@@ -939,6 +1005,16 @@ CONDUCTOR = (
             "'intrinsic_coercivity_A_per_m' \\(ampere per metre at 20 C\\) must be a positive",
         ),
         (MAGNET + HCJ + HCJ_COEFFICIENT.replace("-0.005", "steep"), "must be a number"),
+        (
+            MAGNET + "knee_to_intrinsic_coercivity_ratio: 0.9\n",
+            "'knee_to_intrinsic_coercivity_ratio' needs 'intrinsic_coercivity_A_per_m'",
+        ),
+        (
+            MAGNET + HCJ + "knee_to_intrinsic_coercivity_ratio: 1.2\n",
+            "'knee_to_intrinsic_coercivity_ratio' \\(Hk / Hcj, above 0 and at most 1\\) "
+            "must be at most 1",
+        ),
+        (MAGNET + HCJ + "knee_to_intrinsic_coercivity_ratio: 0\n", "must be a positive number"),
         (MAGNET + "remanence_T: 1.3\n", "not valid YAML at line 7: field 'remanence_T' appears twice"),
         (CONDUCTOR + "density_kg_m3: 8890\n", "field 'density_kg_m3' appears twice"),
         (MAGNET.replace("1.05", "010"), "'relative_permeability'"),
@@ -1002,6 +1078,14 @@ def test_magnet_entry_with_datasheet_coercivity_fields_loads(
     assert magnet.intrinsic_coercivity == 1.5e6
     assert magnet.intrinsic_coercivity_coefficient == -0.005
     assert magnet.at_temperature(120.0).relative_permeability == 1.05
+    assert magnet.knee_ratio is None
+    with_knee = (tmp_path / "materials" / "broken.yaml").read_text(encoding="utf-8")
+    (tmp_path / "materials" / "broken.yaml").write_text(
+        with_knee + "knee_to_intrinsic_coercivity_ratio: 0.9\n", encoding="utf-8"
+    )
+    magnet = load_material("broken")
+    assert magnet.knee_ratio == 0.9
+    assert magnet.knee_field(120.0) == pytest.approx(0.9 * 1.5e6 * 0.5)
 
 
 def test_magnet_entry_may_give_the_remanence_coefficient_alone(

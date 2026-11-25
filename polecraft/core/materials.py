@@ -88,8 +88,10 @@ class Magnet:
     temperature data.
 
     The intrinsic coercivity Hcj and its coefficient are kept as the entry
-    gives them, at 20 C, for a later check against demagnetisation. They
-    take no part in the field solution, which stays on the recoil line.
+    gives them, at 20 C, for the check against demagnetisation; so is
+    ``knee_ratio``, the field at the knee of the demagnetisation curve over
+    Hcj (Hk / Hcj, the squareness a datasheet may give). They take no part
+    in the field solution, which stays on the recoil line.
     """
 
     remanence: float  # Br in tesla
@@ -98,6 +100,7 @@ class Magnet:
     temperature: float = REFERENCE_TEMPERATURE  # degrees Celsius
     intrinsic_coercivity: float | None = None  # Hcj in A/m at 20 C
     intrinsic_coercivity_coefficient: float | None = None  # per kelvin
+    knee_ratio: float | None = None  # Hk / Hcj, taken as the same at every temperature
 
     def __post_init__(self) -> None:
         if not (math.isfinite(self.remanence) and self.remanence >= 0.0):
@@ -114,11 +117,68 @@ class Magnet:
             raise ValueError(f"intrinsic_coercivity must be a positive number, in A/m, not {hcj}")
         if hcj is None and self.intrinsic_coercivity_coefficient is not None:
             raise ValueError("intrinsic_coercivity_coefficient needs intrinsic_coercivity as well")
+        ratio = self.knee_ratio
+        if ratio is not None:
+            if not (math.isfinite(ratio) and 0.0 < ratio <= 1.0):
+                raise ValueError(f"knee_ratio must be above 0 and at most 1, not {ratio}")
+            if hcj is None:
+                raise ValueError("knee_ratio needs intrinsic_coercivity as well")
 
     @property
     def coercivity(self) -> float:
         """Normal coercivity Hcb in A/m: where the recoil line crosses B = 0."""
         return self.remanence / (self.relative_permeability * MU0)
+
+    def intrinsic_coercivity_at(self, temperature: float) -> float:
+        """Hcj in A/m at ``temperature`` in degrees Celsius, from its 20 C value.
+
+        Linear with its coefficient, which a magnet at another temperature
+        than 20 C needs. Hcj falls several times faster with temperature
+        than the remanence does, which is why a magnet that is safe cold can
+        lose its magnetisation hot. Raises ValueError without Hcj, without
+        its coefficient away from 20 C, or where the line reaches zero.
+        """
+        if self.intrinsic_coercivity is None:
+            raise ValueError("this magnet has no intrinsic coercivity (Hcj)")
+        if not math.isfinite(temperature):
+            raise ValueError(f"temperature must be a finite number, not {temperature}")
+        rise = temperature - REFERENCE_TEMPERATURE
+        if rise == 0.0:
+            return self.intrinsic_coercivity
+        if self.intrinsic_coercivity_coefficient is None:
+            raise ValueError(
+                "this magnet has no temperature coefficient for its intrinsic coercivity, "
+                f"so Hcj is known at {REFERENCE_TEMPERATURE:g} C only"
+            )
+        value = self.intrinsic_coercivity * (1.0 + self.intrinsic_coercivity_coefficient * rise)
+        if value <= 0.0:
+            raise ValueError(
+                f"at {temperature:g} C the linear temperature law gives an intrinsic "
+                "coercivity of zero or less; it does not hold that far from 20 C"
+            )
+        return value
+
+    def knee_field(self, temperature: float, knee_ratio: float | None = None) -> float:
+        """Field at the knee of the demagnetisation curve, Hk in A/m, at ``temperature`` (C).
+
+        Hk = knee ratio x Hcj at that temperature. A demagnetising field
+        beyond Hk, along the magnetisation, moves the magnet off its recoil
+        line and part of its magnetisation is lost for good. ``knee_ratio``
+        replaces the magnet's own. The ratio is taken as the same at every
+        temperature, an approximation; datasheet curves show the knee at
+        each temperature where they are given. Raises ValueError where Hcj
+        or the ratio is not known.
+        """
+        coercivity = self.intrinsic_coercivity_at(temperature)
+        ratio = self.knee_ratio if knee_ratio is None else knee_ratio
+        if ratio is None:
+            raise ValueError(
+                "the knee of the demagnetisation curve is not known: give the grade's "
+                "Hk / Hcj from its datasheet as knee_ratio"
+            )
+        if not (math.isfinite(ratio) and 0.0 < ratio <= 1.0):
+            raise ValueError(f"knee_ratio must be above 0 and at most 1, not {ratio}")
+        return ratio * coercivity
 
     def at_temperature(self, temperature: float) -> Magnet:
         """The magnet at ``temperature`` in degrees Celsius, from the 20 C entry.
@@ -396,6 +456,7 @@ _UNITS = {
     "remanence_temp_coefficient_per_K": "fraction per kelvin, about 20 C",
     "intrinsic_coercivity_A_per_m": "ampere per metre at 20 C",
     "intrinsic_coercivity_temp_coefficient_per_K": "fraction per kelvin, about 20 C",
+    "knee_to_intrinsic_coercivity_ratio": "Hk / Hcj, above 0 and at most 1",
 }
 # Refused because the name does not say which coercivity it means. The
 # coefficient a datasheet gives is for the intrinsic coercivity Hcj; Hcb, on
@@ -580,6 +641,19 @@ def _magnet(data: dict, name: str) -> Magnet:
         optional["intrinsic_coercivity_coefficient"] = _coefficient(
             data, "intrinsic_coercivity_temp_coefficient_per_K", name
         )
+    if "knee_to_intrinsic_coercivity_ratio" in data:
+        if "intrinsic_coercivity" not in optional:
+            raise ValueError(
+                f"{where}: 'knee_to_intrinsic_coercivity_ratio' needs "
+                f"'intrinsic_coercivity_A_per_m' as well"
+            )
+        ratio = _number(data, "knee_to_intrinsic_coercivity_ratio", name)
+        if ratio > 1.0:
+            raise ValueError(
+                f"{where}: 'knee_to_intrinsic_coercivity_ratio' "
+                f"({_UNITS['knee_to_intrinsic_coercivity_ratio']}) must be at most 1, not {ratio:g}"
+            )
+        optional["knee_ratio"] = ratio
     return Magnet(
         remanence=_number(data, "remanence_T", name, positive=False),
         relative_permeability=_number(data, "relative_permeability", name),

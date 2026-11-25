@@ -32,6 +32,16 @@ releases.
   now carry the core loss (`flux_map(..., losses=...)`, `FluxMap.core_loss`)
   from the same solves. Not included: friction and windage, magnet and
   winding eddy currents, and the drive's own loss.
+- Torque against current up to peak (`polecraft.studies.saturation`): mean
+  torque, torque constant and its fall with saturation at each current.
+- Demagnetisation check (`polecraft.studies.demagnetisation`): the most
+  demagnetising field in every magnet triangle over a cycle, at a current
+  and magnet temperature, against the knee of the magnet's curve; flags any
+  part of the magnet past it. `magnet_field` in `polecraft.core.post` gives
+  the field along the magnetisation.
+- Magnet grades can give the knee as `knee_to_intrinsic_coercivity_ratio`
+  (Hk / Hcj); `Magnet.intrinsic_coercivity_at` and `Magnet.knee_field` give
+  Hcj and Hk at a temperature.
 - `core_loss_of_run` in `polecraft.studies.core_loss`: the core loss from
   solves already made.
 - `core_loss_density` and `material_flux_density` in `polecraft.core.post`:

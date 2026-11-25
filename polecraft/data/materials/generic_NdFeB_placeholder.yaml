@@ -15,9 +15,11 @@
 # A datasheet also gives the intrinsic coercivity Hcj and its coefficient,
 # which is several times larger than the remanence's. An entry made from a
 # datasheet may carry them as `intrinsic_coercivity_A_per_m` and
-# `intrinsic_coercivity_temp_coefficient_per_K`. They are kept for a later
-# check against demagnetisation and are not used in the field solution. This
-# placeholder gives neither, because it has no datasheet to take them from.
+# `intrinsic_coercivity_temp_coefficient_per_K`, and the knee of the
+# demagnetisation curve as `knee_to_intrinsic_coercivity_ratio` (Hk / Hcj,
+# the squareness). They are used by the check against demagnetisation, not
+# in the field solution. This placeholder gives none of them, because it has
+# no datasheet to take them from.
 name: generic_NdFeB_placeholder
 kind: magnet
 description: Placeholder sintered NdFeB magnet. Not a datasheet value.

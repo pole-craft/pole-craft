@@ -21,6 +21,7 @@ from polecraft.core.post import (
     flux_linkage,
     gap_flux_density,
     linkage_per_metre,
+    magnet_field,
     material_flux_density,
     ring_torque_per_metre,
     torque,
@@ -924,3 +925,60 @@ def test_material_flux_density_refuses_bad_input() -> None:
     other = dataclasses.replace(step[0], triangles=step[0].triangles[:, [1, 2, 0]])
     with pytest.raises(ValueError, match="not those of the first"):
         material_flux_density([step, (other, step[1])], np.arange(3))
+
+
+# Field in the magnets
+
+
+def magnet_block(field: tuple[float, float], direction: float, magnetised: slice = slice(None)):
+    """A 20 mm by 10 mm magnet in a field held uniform by its outline, solved."""
+    nodes, triangles = grid(8, 4, 0.02, 0.01)
+    edge = np.flatnonzero(
+        np.isclose(nodes[:, 0], 0.0)
+        | np.isclose(nodes[:, 0], 0.02)
+        | np.isclose(nodes[:, 1], 0.0)
+        | np.isclose(nodes[:, 1], 0.01)
+    )
+    remanence = np.zeros((len(triangles), 2))
+    remanence[magnetised] = 1.2 * np.array([math.cos(direction), math.sin(direction)])
+    potential = field[0] * nodes[:, 1] - field[1] * nodes[:, 0]
+    problem = Problem(
+        nodes=nodes,
+        triangles=triangles,
+        materials=(Magnet(1.2, relative_permeability=1.05),),
+        remanence=remanence,
+        fixed_nodes=edge,
+        fixed_values=potential[edge],
+    )
+    return problem, solve(problem)
+
+
+@pytest.mark.parametrize("direction", [0.0, 0.8, 2.6])
+def test_magnet_field_on_the_recoil_line(direction: float) -> None:
+    # A uniformly magnetised block has no sources inside, so the field is
+    # the one its outline holds, and H = (B - Br) / (mu_r mu0) exactly.
+    applied = (0.9 * math.cos(direction) - 0.3 * math.sin(direction),
+               0.9 * math.sin(direction) + 0.3 * math.cos(direction))
+    problem, solution = magnet_block(applied, direction)
+    triangles, along_h, along_b = magnet_field(problem, solution)
+    assert np.array_equal(triangles, np.arange(len(problem.triangles)))
+    assert along_b == pytest.approx(np.full(triangles.size, 0.9), rel=1e-9)
+    assert along_h == pytest.approx(np.full(triangles.size, (0.9 - 1.2) / (1.05 * MU0)), rel=1e-9)
+
+
+def test_magnet_field_against_and_with_the_magnetisation() -> None:
+    # A field reversed against the magnet: B along it negative, H well past -Hcb.
+    problem, solution = magnet_block((-0.5, 0.0), 0.0)
+    _, along_h, along_b = magnet_field(problem, solution)
+    assert np.all(along_b == pytest.approx(-0.5))
+    assert np.all(along_h < -Magnet(1.2, relative_permeability=1.05).coercivity)
+    # Where the field equals Br, H is zero: the magnet in a closed iron circuit.
+    problem, solution = magnet_block((1.2, 0.0), 0.0)
+    assert np.allclose(magnet_field(problem, solution)[1], 0.0, atol=1e-3)
+
+
+def test_magnet_field_skips_triangles_with_no_remanence() -> None:
+    problem, solution = magnet_block((0.9, 0.0), 0.0, magnetised=slice(0, 10))
+    triangles, along_h, along_b = magnet_field(problem, solution)
+    assert np.array_equal(triangles, np.arange(10))
+    assert along_h.shape == along_b.shape == (10,)

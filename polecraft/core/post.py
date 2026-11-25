@@ -342,3 +342,29 @@ def core_loss_density(
     beta = coefficients.hysteresis_exponent
     hysteresis = coefficients.hysteresis * frequency * (along**beta + across**beta)
     return hysteresis, eddy, excess
+
+
+def magnet_field(
+    problem: Problem, solution: Solution
+) -> tuple[NDArray[np.intp], NDArray[np.float64], NDArray[np.float64]]:
+    """Field along the magnetisation in every magnetised triangle.
+
+    Returns the numbers of the triangles with a remanence, the field H
+    along their magnetisation in A/m and the flux density B along it in
+    tesla. On the recoil line of a magnet B = mu_r mu0 H + Br, so
+    H = (B - Br) / (mu_r mu0); H is negative where it opposes the
+    magnetisation, which is where a magnet can be demagnetised. The
+    magnetisation's direction is that of the triangle's remanence vector.
+    """
+    _check_pair(problem, solution)
+    remanence = problem.remanence
+    size = np.hypot(remanence[:, 0], remanence[:, 1])
+    triangles = np.flatnonzero(size > 0.0)
+    direction = remanence[triangles] / size[triangles, None]
+    along_b = (solution.flux_density[triangles] * direction).sum(axis=1)
+    # A magnetised triangle has a linear material: one reluctivity each.
+    reluctivity = np.array(
+        [float(model.reluctivity(np.zeros(1))[0]) for model in problem.materials]
+    )[problem.triangle_material[triangles]]
+    along_h = reluctivity * (along_b - size[triangles])
+    return triangles, along_h, along_b
