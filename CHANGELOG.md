@@ -5,6 +5,12 @@ numbers follow [semantic versioning](https://semver.org); while the version
 is 0.0.x the design-file format and the Python interface may change between
 releases.
 
+## [Unreleased]
+
+- Copper loss study (`polecraft.studies.copper_loss`): the loss of all three
+  phases for a peak phase current and a winding temperature, from the DC
+  resistance (no skin or proximity effect).
+
 ## [0.0.4] - 2026-11-24
 
 The first release with material data and a winding model. The library has
