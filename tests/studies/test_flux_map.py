@@ -219,3 +219,62 @@ def test_operating_point_refuses_bad_input(small: dict) -> None:
         direct(small, 0.0, math.nan)
     with pytest.raises(ValueError, match="points"):
         direct(small, 0.0, 1.0, points=0)
+
+
+# Core loss on the map
+
+
+def test_core_loss_scales_with_speed_and_is_never_negative() -> None:
+    known = linear_map([-10.0, -5.0, 0.0], [0.0, 5.0, 10.0])
+    assert not known.has_core_loss
+    with pytest.raises(ValueError, match="without loss data"):
+        known.core_loss(0.0, 0.0, 100.0)
+    i_d, i_q = np.meshgrid(known.d_currents, known.q_currents, indexing="ij")
+    # Small values that a spline would swing below zero between.
+    hysteresis = np.where((i_d == -5.0) & (i_q == 5.0), 0.01, 1e-6)
+    with_loss = FluxMap(
+        known.d_currents,
+        known.q_currents,
+        known.pole_pairs,
+        known.points,
+        known.d_linkage,
+        known.q_linkage,
+        known.torque,
+        Timings(),
+        hysteresis=hysteresis,
+        eddy=np.full(i_d.shape, 2e-5),
+        excess=np.full(i_d.shape, 3e-4),
+    )
+    assert with_loss.has_core_loss
+    h, e, x = with_loss.core_loss([-5.0, -5.0], [5.0, 5.0], [100.0, -200.0])
+    assert h == pytest.approx([1.0, 2.0])
+    assert e == pytest.approx([0.2, 0.8])
+    assert x == pytest.approx([0.3, 3e-4 * 200.0**1.5])
+    h, _, _ = with_loss.core_loss(np.linspace(-10, 0, 41), 9.5, 100.0)
+    assert np.all(h >= 0.0)
+    with pytest.raises(ValueError, match="outside the map"):
+        with_loss.core_loss(1.0, 0.0, 100.0)
+
+
+def test_operating_point_with_losses_matches_the_core_loss_study(small: dict) -> None:
+    from polecraft.core.materials import load_core_loss
+    from polecraft.studies.core_loss import core_loss
+
+    losses = {"M270-35A": load_core_loss("M270-35A")}
+    plain = direct(small, -6.0, 9.0)
+    point = operating_point(
+        small["machine"], small["mesh"], MATERIALS, -6.0, 9.0, POINTS, losses=losses
+    )
+    # The extra solve at the end of the cycle leaves the means alone.
+    assert point.d_linkage == plain.d_linkage and point.torque == plain.torque
+    size, advance = current_and_advance(-6.0, 9.0)
+    speed = 150.0
+    study = core_loss(
+        small["machine"], small["mesh"], MATERIALS, losses, speed, size, advance, POINTS
+    )
+    assert point.hysteresis * speed == pytest.approx(study.hysteresis, rel=1e-12)
+    assert point.eddy * speed**2 == pytest.approx(study.eddy, rel=1e-12)
+    assert point.excess * speed**1.5 == pytest.approx(study.excess, rel=1e-12)
+    assert point.fitted_frequencies == study.fitted_frequencies
+    with pytest.raises(ValueError, match="points must be at least 8"):
+        operating_point(small["machine"], small["mesh"], MATERIALS, 0.0, 1.0, 6, losses=losses)

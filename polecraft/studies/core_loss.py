@@ -230,7 +230,6 @@ def core_loss(
     layout = machine.symmetry()
     pole_pairs = layout.poles * layout.periods // 2
     cycle = 2.0 * math.pi / pole_pairs  # mechanical radians
-    duration = cycle / abs(speed)  # seconds
     angles = cycle * np.arange(points + 1) / points
     run = solve_angles(
         mesh,
@@ -239,6 +238,38 @@ def core_loss(
         solver=solver,
     )
     started = time.perf_counter()
+    result = core_loss_of_run(
+        run, materials, losses, speed, pole_pairs, stacking_factor, coefficients, current, advance
+    )
+    run.timings.add("core loss", time.perf_counter() - started)
+    result._warn_outside_fit()
+    return result
+
+
+def core_loss_of_run(
+    run: RotorRun,
+    materials: Mapping[str, Material],
+    losses: Mapping[str, CoreLossData],
+    speed: float,
+    pole_pairs: int,
+    stacking_factor: float,
+    coefficients: Mapping[str, CoreLossCoefficients] | None = None,
+    current: float = 0.0,
+    advance: float = 0.0,
+) -> CoreLoss:
+    """Core loss from solves already made over one electrical cycle and its end.
+
+    ``run`` holds the solves at evenly spaced rotor angles of one electrical
+    cycle, the last one at its end (the first angle plus a cycle), as
+    ``core_loss`` makes them. ``speed`` in mechanical rad/s sets the time
+    the cycle takes; ``current`` and ``advance`` are only recorded. The
+    other arguments are as for ``core_loss``. Does not warn about the
+    frequency: the caller does that for the speeds it uses.
+    """
+    _check_speed(speed)
+    if len(run.steps) < 9:
+        raise ValueError(f"the run must hold at least 9 solves, not {len(run.steps)}")
+    duration = 2.0 * math.pi / pole_pairs / abs(speed)  # seconds
     first = run.steps[0].problem
     steps = [(step.problem, step.solution) for step in run.steps]
     _, area = shape_gradients(first.nodes, first.triangles)
@@ -280,8 +311,7 @@ def core_loss(
     triangles, mass, turning, peak, beyond, hysteresis, eddy, excess = (
         column[order] for column in joined
     )
-    run.timings.add("core loss", time.perf_counter() - started)
-    result = CoreLoss(
+    return CoreLoss(
         speed=float(speed),
         pole_pairs=pole_pairs,
         current=float(current),
@@ -299,5 +329,3 @@ def core_loss(
         ),
         run=run,
     )
-    result._warn_outside_fit()
-    return result

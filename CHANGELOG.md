@@ -26,6 +26,14 @@ releases.
   field weakening above the base speed and the winding's resistance and
   end-turn inductance included. `phase_limits` turns a drive's DC bus
   voltage and current limit into phase limits for star or delta.
+- Efficiency map (`polecraft.studies.efficiency`): copper and core loss
+  and efficiency over speed and shaft torque, at the d and q current that
+  loses least within the drive's voltage and current limits. Flux maps can
+  now carry the core loss (`flux_map(..., losses=...)`, `FluxMap.core_loss`)
+  from the same solves. Not included: friction and windage, magnet and
+  winding eddy currents, and the drive's own loss.
+- `core_loss_of_run` in `polecraft.studies.core_loss`: the core loss from
+  solves already made.
 - `core_loss_density` and `material_flux_density` in `polecraft.core.post`:
   loss per kilogram from any flux density waveform, and the field a turning
   triangle sees in its own frame.

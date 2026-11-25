@@ -34,6 +34,12 @@ What the maps are, and are not:
 - Inside the grid the values are bicubic splines through the solved points
   (lower order with fewer than four points on an axis). Outside it there is
   no value: the steel's saturation cannot be guessed by extrapolation.
+
+Given the steel's loss data, the map also holds the core loss at each grid
+point (see ``polecraft.studies.core_loss``), from the same solves and one
+more at the end of the cycle. The field does not depend on speed, so the
+loss is kept as three numbers, h, e and x, that give it at any mechanical
+speed w as h w + e w^2 + x w^1.5 (hysteresis, eddy current, excess).
 """
 
 from __future__ import annotations
@@ -50,11 +56,12 @@ from scipy.interpolate import RectBivariateSpline
 from polecraft.core.motion import solve_angles
 from polecraft.core.post import flux_linkage, torque
 from polecraft.core.problem import build_problem
+from polecraft.studies.core_loss import core_loss_of_run
 from polecraft.studies.inductance import dq_components
 from polecraft.timing import Timings
 
 if TYPE_CHECKING:
-    from polecraft.core.materials import Material
+    from polecraft.core.materials import CoreLossCoefficients, CoreLossData, Material
     from polecraft.core.mesh import Mesh
     from polecraft.machines.base import Machine
 
@@ -78,6 +85,13 @@ class OperatingPoint:
     d_linkage: float  # Wb
     q_linkage: float  # Wb
     torque: float  # N m, from the air-gap stress
+    # Core loss of the whole machine at 1 mechanical rad/s, by part, in W;
+    # None without loss data. At speed w: hysteresis w + eddy w^2 + excess w^1.5.
+    hysteresis: float | None = None
+    eddy: float | None = None
+    excess: float | None = None
+    # Frequency range in Hz the loss coefficients were fitted over, if any.
+    fitted_frequencies: tuple[float, float] | None = None
 
 
 def operating_point(
@@ -89,6 +103,9 @@ def operating_point(
     points: int = 24,
     solver: str | None = None,
     timings: Timings | None = None,
+    losses: Mapping[str, CoreLossData] | None = None,
+    coefficients: Mapping[str, CoreLossCoefficients] | None = None,
+    stacking_factor: float | None = None,
 ) -> OperatingPoint:
     """Solve one operating point: means over ``points`` rotor angles of a cycle.
 
@@ -96,16 +113,24 @@ def operating_point(
     starting from the one before. ``materials`` are as for
     ``build_problem``, ``solver`` as for ``solve``; the time taken is added
     to ``timings`` if one is given.
+
+    With ``losses`` (and optionally ``coefficients`` and
+    ``stacking_factor``, all as for ``core_loss``) the core loss is found
+    too, which takes one more solve at the end of the cycle and at least 8
+    points.
     """
     for name, value in (("d current", d_current), ("q current", q_current)):
         if not math.isfinite(value):
             raise ValueError(f"{name} must be a finite number of amperes, not {value}")
-    if points < 1:
-        raise ValueError(f"points must be at least 1, not {points}")
+    least = 8 if losses else 1
+    if points < least:
+        raise ValueError(f"points must be at least {least}, not {points}")
     size, advance = current_and_advance(d_current, q_current)
     layout = machine.symmetry()
     pole_pairs = layout.poles * layout.periods // 2
-    angles = mesh.rotor_angle + 2.0 * math.pi / pole_pairs * np.arange(points) / points
+    # With losses, the end of the cycle too: the core loss needs it closed.
+    solved = points + 1 if losses else points
+    angles = mesh.rotor_angle + 2.0 * math.pi / pole_pairs * np.arange(solved) / points
     run = solve_angles(
         mesh,
         angles,
@@ -113,18 +138,33 @@ def operating_point(
         solver=solver,
     )
     started = time.perf_counter()
+    cycle = run.steps[:points]
     linked = np.array(
         [
             dq_components(machine, float(angle), flux_linkage(step.problem, step.solution))
-            for angle, step in zip(angles, run.steps)
+            for angle, step in zip(angles, cycle)
         ]
     )
+    parts: dict[str, object] = {}
+    if losses:
+        if stacking_factor is None:
+            stacking_factor = machine.design.steel.stacking_factor
+        loss = core_loss_of_run(
+            run, materials, losses, 1.0, pole_pairs, stacking_factor, coefficients, size, advance
+        )
+        parts = {
+            "hysteresis": loss.hysteresis,
+            "eddy": loss.eddy,
+            "excess": loss.excess,
+            "fitted_frequencies": loss.fitted_frequencies,
+        }
     result = OperatingPoint(
         d_current=float(d_current),
         q_current=float(q_current),
         d_linkage=float(linked[:, 0].mean()),
         q_linkage=float(linked[:, 1].mean()),
-        torque=float(np.mean([torque(step.problem, step.solution) for step in run.steps])),
+        torque=float(np.mean([torque(step.problem, step.solution) for step in cycle])),
+        **parts,
     )
     if timings is not None:
         for name, seconds in run.timings.stages:
@@ -148,6 +188,17 @@ class FluxMap:
     q_linkage: NDArray[np.float64]  # Wb
     torque: NDArray[np.float64]  # N m, from the air-gap stress
     timings: Timings
+    # Core loss in W at 1 mechanical rad/s, by part; None without loss data.
+    # At speed w the loss is hysteresis w + eddy w^2 + excess w^1.5.
+    hysteresis: NDArray[np.float64] | None = None
+    eddy: NDArray[np.float64] | None = None
+    excess: NDArray[np.float64] | None = None
+    fitted_frequencies: tuple[float, float] | None = None  # Hz, of the loss coefficients
+
+    @property
+    def has_core_loss(self) -> bool:
+        """Whether the map holds the core loss."""
+        return self.hysteresis is not None
 
     @property
     def torque_from_linkage(self) -> NDArray[np.float64]:
@@ -178,6 +229,40 @@ class FluxMap:
         i_d, i_q = np.broadcast_arrays(
             np.asarray(d_current, dtype=float), np.asarray(q_current, dtype=float)
         )
+        x, y = self._inside(i_d, i_q)
+        return tuple(  # type: ignore[return-value]
+            spline(x, y, grid=False).reshape(i_d.shape) for spline in self._splines()
+        )
+
+    def core_loss(
+        self, d_current: ArrayLike, q_current: ArrayLike, speed: ArrayLike
+    ) -> tuple[NDArray[np.float64], NDArray[np.float64], NDArray[np.float64]]:
+        """Hysteresis, eddy-current and excess loss in W at operating points in the grid.
+
+        ``speed`` is in mechanical rad/s; it and the currents (A) are
+        broadcast together. The parts are the map's values at 1 rad/s
+        scaled by the speed, its square and its power 1.5; they never fall
+        below zero, which a spline between small values could. Raises
+        ValueError for a point outside the grid or a map without core loss.
+        """
+        if not self.has_core_loss:
+            raise ValueError("this map was made without loss data, so it has no core loss")
+        i_d, i_q, w = np.broadcast_arrays(
+            np.asarray(d_current, dtype=float),
+            np.asarray(q_current, dtype=float),
+            np.abs(np.asarray(speed, dtype=float)),
+        )
+        x, y = self._inside(i_d, i_q)
+        h, e, k = (
+            np.maximum(spline(x, y, grid=False).reshape(i_d.shape), 0.0)
+            for spline in self._splines(losses=True)
+        )
+        return h * w, e * w**2, k * w**1.5
+
+    def _inside(
+        self, i_d: NDArray[np.float64], i_q: NDArray[np.float64]
+    ) -> tuple[NDArray[np.float64], NDArray[np.float64]]:
+        """The currents as flat arrays clipped onto the grid; ValueError if one is off it."""
         inside = self.covers(i_d, i_q)
         if not inside.all():
             where = np.flatnonzero(~inside.ravel())[0]
@@ -189,26 +274,31 @@ class FluxMap:
             )
         x = np.clip(i_d, self.d_currents[0], self.d_currents[-1]).ravel()
         y = np.clip(i_q, self.q_currents[0], self.q_currents[-1]).ravel()
-        return tuple(  # type: ignore[return-value]
-            spline(x, y, grid=False).reshape(i_d.shape) for spline in self._splines()
-        )
+        return x, y
 
-    def _splines(self) -> tuple[RectBivariateSpline, ...]:
-        cached = self.__dict__.get("_cached_splines")
+    def _splines(self, losses: bool = False) -> tuple[RectBivariateSpline, ...]:
+        key = "_cached_loss_splines" if losses else "_cached_splines"
+        cached = self.__dict__.get(key)
         if cached is None:
             kx = min(3, len(self.d_currents) - 1)
             ky = min(3, len(self.q_currents) - 1)
+            grids = (
+                (self.hysteresis, self.eddy, self.excess)
+                if losses
+                else (self.d_linkage, self.q_linkage, self.torque)
+            )
             cached = tuple(
                 RectBivariateSpline(self.d_currents, self.q_currents, values, kx=kx, ky=ky, s=0)
-                for values in (self.d_linkage, self.q_linkage, self.torque)
+                for values in grids
             )
-            self.__dict__["_cached_splines"] = cached
+            self.__dict__[key] = cached
         return cached
 
     def timing_report(self) -> str:
         """Time spent over all the solves, as text."""
         count = len(self.d_currents) * len(self.q_currents)
-        heading = f"Timing ({count} operating points, {count * self.points} rotor angles)"
+        angles = count * (self.points + (1 if self.has_core_loss else 0))
+        heading = f"Timing ({count} operating points, {angles} rotor angles)"
         return "\n".join([heading] + self.timings.report().splitlines()[1:])
 
 
@@ -231,6 +321,9 @@ def flux_map(
     q_currents: ArrayLike,
     points: int = 24,
     solver: str | None = None,
+    losses: Mapping[str, CoreLossData] | None = None,
+    coefficients: Mapping[str, CoreLossCoefficients] | None = None,
+    stacking_factor: float | None = None,
 ) -> FluxMap:
     """Map the flux linkages and torque of a machine over d and q current.
 
@@ -244,30 +337,61 @@ def flux_map(
 
     Grid points closer together give closer interpolation; where the steel
     saturates the values bend most.
+
+    With ``losses`` the map holds the core loss too; ``losses``,
+    ``coefficients`` and ``stacking_factor`` are as for ``core_loss``, and
+    the coefficients are fitted once for the whole map.
     """
     d_axis = _axis(d_currents, "d currents")
     q_axis = _axis(q_currents, "q currents")
-    if points < 1:
-        raise ValueError(f"points must be at least 1, not {points}")
+    least = 8 if losses else 1
+    if points < least:
+        raise ValueError(f"points must be at least {least}, not {points}")
+    if losses:
+        fits = dict(coefficients or {})
+        for name, data in losses.items():
+            if name not in fits:
+                fits[name] = data.fit()
+        coefficients = fits
     layout = machine.symmetry()
     timings = Timings()
     shape = (d_axis.size, q_axis.size)
-    linkage_d, linkage_q, torques = np.empty(shape), np.empty(shape), np.empty(shape)
+    grids = {name: np.empty(shape) for name in ("d", "q", "t", "h", "e", "x")}
+    fitted = None
     for row, i_d in enumerate(d_axis):
         for column, i_q in enumerate(q_axis):
             point = operating_point(
-                machine, mesh, materials, float(i_d), float(i_q), points, solver, timings
+                machine,
+                mesh,
+                materials,
+                float(i_d),
+                float(i_q),
+                points,
+                solver,
+                timings,
+                losses,
+                coefficients,
+                stacking_factor,
             )
-            linkage_d[row, column] = point.d_linkage
-            linkage_q[row, column] = point.q_linkage
-            torques[row, column] = point.torque
+            grids["d"][row, column] = point.d_linkage
+            grids["q"][row, column] = point.q_linkage
+            grids["t"][row, column] = point.torque
+            if losses:
+                grids["h"][row, column] = point.hysteresis
+                grids["e"][row, column] = point.eddy
+                grids["x"][row, column] = point.excess
+                fitted = point.fitted_frequencies
     return FluxMap(
         d_currents=d_axis,
         q_currents=q_axis,
         pole_pairs=layout.poles * layout.periods // 2,
         points=points,
-        d_linkage=linkage_d,
-        q_linkage=linkage_q,
-        torque=torques,
+        d_linkage=grids["d"],
+        q_linkage=grids["q"],
+        torque=grids["t"],
         timings=timings,
+        hysteresis=grids["h"] if losses else None,
+        eddy=grids["e"] if losses else None,
+        excess=grids["x"] if losses else None,
+        fitted_frequencies=fitted,
     )
