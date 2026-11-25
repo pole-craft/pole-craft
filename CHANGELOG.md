@@ -17,6 +17,10 @@ releases.
   loss is that of the sheet as measured in a sine-wave field: no allowance
   for stamping or stress, none for a solid rotor yoke, and no eddy currents
   in the magnets.
+- Flux and torque maps (`polecraft.studies.flux_map`): d- and q-axis flux
+  linkage and mean torque solved on a grid of d and q currents, then
+  interpolated at any operating point inside it (`FluxMap.at`) instead of
+  solved again. `operating_point` solves a single point.
 - `core_loss_density` and `material_flux_density` in `polecraft.core.post`:
   loss per kilogram from any flux density waveform, and the field a turning
   triangle sees in its own frame.
