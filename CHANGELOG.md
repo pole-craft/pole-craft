@@ -32,6 +32,10 @@ releases.
   now carry the core loss (`flux_map(..., losses=...)`, `FluxMap.core_loss`)
   from the same solves. Not included: friction and windage, magnet and
   winding eddy currents, and the drive's own loss.
+- Mechanical metrics (`polecraft.studies.mechanical`): mass of the stator
+  steel, rotor steel, magnets and copper, rotor inertia, torque density and
+  the motor constant. Active parts only; densities come from the material
+  library where it has them and are otherwise given by the caller.
 - Torque against current up to peak (`polecraft.studies.saturation`): mean
   torque, torque constant and its fall with saturation at each current.
 - Demagnetisation check (`polecraft.studies.demagnetisation`): the most
