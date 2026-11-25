@@ -5,7 +5,16 @@ numbers follow [semantic versioning](https://semver.org); while the version
 is 0.0.x the design-file format and the Python interface may change between
 releases.
 
-## [Unreleased]
+## [0.0.4] - 2026-11-24
+
+The first release with material data and a winding model. The library has
+M270-35A steel from the maker's brochure, copper and a placeholder magnet;
+a phase winding has its resistance, slot fill and design warnings; and the
+d- and q-axis inductance, with an end-turn estimate, is within 1 % of FEMM on
+the reference motor. The commands and studies still take a stand-in steel
+and magnet rather than the materials a design names, and there is no real
+magnet grade yet, so the numbers show how the tool behaves, not how a motor
+performs.
 
 ### Added
 
@@ -90,6 +99,9 @@ releases.
   study adds it to Ld and Lq. It is an estimate, good to perhaps 40 %:
   6.9 uH on 0.61 mH for the reference motor and 5.7 uH on 0.157 mH for the
   12-slot 10-pole example.
+- An example script, `examples/magnet_temperature.py`: torque and back-EMF
+  of the 12-slot 10-pole example with M270-35A steel and the placeholder
+  magnet at 20, 60 and 100 C.
 
 ### Changed
 
@@ -123,6 +135,34 @@ releases.
 - `solve_angles` refuses a problem whose nodes are not those of the turned
   mesh. A problem built on the unturned mesh of a whole machine has the
   right number of nodes and used to pass.
+
+### Known limits
+
+- No real magnet grade: the library's magnet is a placeholder, and the
+  commands and studies (`polecraft solve`, the example scripts) still use a
+  stand-in steel and magnet, not the materials a design names. Do not use
+  the results to judge a motor.
+- The steel curve beyond its table (above 1.8 T for M270-35A) is an
+  extension by a stated rule, probably below the real saturation, so flux in
+  steel above 1.8 T is understated. Beyond 1000 Hz the core-loss fit
+  over-predicts (16 to 36 % at 2500 Hz); nothing yet uses it in a result.
+- The magnet's straight line is only good up to its grade's working
+  temperature, which the library does not store, and nothing checks for
+  demagnetisation. The intrinsic coercivity is stored at 20 C and does not
+  change with temperature.
+- A winding in delta is loaded with a warning: the third-harmonic current
+  that the phase back-EMFs drive round a closed delta is not modelled.
+- The end-turn inductance is an estimate, good to perhaps 40 %, and is not
+  meant for an overhang below about half the coil thickness.
+- The inductance is compared with FEMM on the reference motor only, with
+  the placeholder materials in both programs. The M270-35A curve and loss
+  data are typical brochure values, checked against the brochure but not
+  against measurements.
+- The limits of 0.0.3 still hold: studies are run from Python, cogging
+  torque of the 36-slot 42-pole reference motor does not settle with the
+  mesh, and the model is 2D, without end effects, skew, losses in a result
+  or an efficiency map, for outer-rotor surface-magnet motors only. Solving
+  needs the optional Gmsh package.
 
 ## [0.0.3] - 2026-11-20
 
@@ -442,6 +482,7 @@ does not report torque, back-EMF or losses.
 - Meshing cannot be interrupted part-way; Ctrl-C takes effect when the mesher
   returns.
 
+[0.0.4]: https://github.com/pole-craft/pole-craft/releases/tag/v0.0.4
 [0.0.3]: https://github.com/pole-craft/pole-craft/releases/tag/v0.0.3
 [0.0.2]: https://github.com/pole-craft/pole-craft/releases/tag/v0.0.2
 [0.0.1]: https://github.com/pole-craft/pole-craft/releases/tag/v0.0.1

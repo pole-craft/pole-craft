@@ -4,7 +4,7 @@
 
 Open-source design and simulation tool for quasi-direct-drive (QDD) motors.
 
-> **Status: early development (version 0.0.3).** What 0.0.3 can do: load a motor design file and check it, work out the winding layout and the slice of the motor that repeats, build the cross-section of an outer-rotor surface-magnet motor, mesh it, turn its rotor without meshing again, solve its 2D magnetic field at any rotor position with saturating steel and permanent magnets, and draw the field. From the solved fields it reports the torque and the flux linked by each phase, and, over a cycle of rotor angle, the cogging torque, the back-EMF, and the torque with the currents following the rotor, with its ripple and torque constant. The `polecraft mesh` and `polecraft solve` commands do the first steps (`polecraft solve` at one rotor position); the studies are run from Python, as in [examples/motor_over_a_cycle.py](https://github.com/pole-craft/pole-craft/blob/main/examples/motor_over_a_cycle.py). Checked against FEMM on the reference motor: torque within 0.3 %, back-EMF within 0.14 %; the cogging torque of the 12-slot, 10-pole example within 3 %. What it cannot do yet: **its commands and studies still use a stand-in steel and magnet**, so its numbers show how the tool behaves, not how a motor performs. The material library now has measured typical data for M270-35A steel (BH curve and core-loss tables, from the maker's brochure), but no real magnet grade yet, and a design's materials are not yet taken from the library. The cogging torque of the 36-slot, 42-pole reference motor is about a thousandth of its torque and does not settle as the mesh is refined, so take it as an order of magnitude. There are no losses or efficiency map; it is 2D, without end effects; and inner-rotor motors are not supported. The roadmap below shows what comes next.
+> **Status: early development (version 0.0.4).** What 0.0.4 can do: load a motor design file and check it, work out the winding layout and the slice of the motor that repeats, build the cross-section of an outer-rotor surface-magnet motor, mesh it, turn its rotor without meshing again, solve its 2D magnetic field at any rotor position with saturating steel and permanent magnets, and draw the field. From the solved fields it reports the torque and the flux linked by each phase, and, over a cycle of rotor angle, the cogging torque, the back-EMF, and the torque with the currents following the rotor, with its ripple and torque constant. It also has a material library (M270-35A steel, copper, a placeholder magnet whose remanence follows temperature), a phase winding model (resistance with temperature, star or delta, slot fill, design warnings) and d- and q-axis inductance with an end-turn estimate. The `polecraft mesh` and `polecraft solve` commands do the first steps (`polecraft solve` at one rotor position); the studies are run from Python, as in [examples/motor_over_a_cycle.py](https://github.com/pole-craft/pole-craft/blob/main/examples/motor_over_a_cycle.py). Checked against FEMM on the reference motor: torque within 0.3 %, back-EMF within 0.14 %, d- and q-axis inductance within 1 %; the cogging torque of the 12-slot, 10-pole example within 3 %. What it cannot do yet: **its commands and studies still use a stand-in steel and magnet**, so its numbers show how the tool behaves, not how a motor performs. The material library now has measured typical data for M270-35A steel (BH curve and core-loss tables, from the maker's brochure), but no real magnet grade yet, and a design's materials are not yet taken from the library. The cogging torque of the 36-slot, 42-pole reference motor is about a thousandth of its torque and does not settle as the mesh is refined, so take it as an order of magnitude. There are no losses or efficiency map; it is 2D, without end effects; and inner-rotor motors are not supported. The roadmap below shows what comes next.
 
 ![Mesh of the repeating slice of a 36-slot, 42-pole outer-rotor motor](https://raw.githubusercontent.com/pole-craft/pole-craft/main/docs/images/mesh_36s42p.png)
 
@@ -96,7 +96,7 @@ A longer example that also prints the winding layout is in [examples/mesh_a_desi
 
 ## Examples
 
-Scripts in the [examples folder](https://github.com/pole-craft/pole-craft/tree/main/examples) of the repository, each run with `python examples/<name>`. They need version 0.0.2 or newer, which has the field solver; motor_over_a_cycle.py needs 0.0.3 or newer.
+Scripts in the [examples folder](https://github.com/pole-craft/pole-craft/tree/main/examples) of the repository, each run with `python examples/<name>`. They need version 0.0.2 or newer, which has the field solver; motor_over_a_cycle.py needs 0.0.3 or newer and magnet_temperature.py 0.0.4 or newer.
 
 | Example | What it shows | Needs Gmsh |
 |---|---|---|
@@ -111,6 +111,7 @@ Scripts in the [examples folder](https://github.com/pole-craft/pole-craft/tree/m
 | [choose_a_solver.py](https://github.com/pole-craft/pole-craft/blob/main/examples/choose_a_solver.py) | List the sparse solvers on your machine and time each | yes |
 | [core_with_an_air_gap.py](https://github.com/pole-craft/pole-craft/blob/main/examples/core_with_an_air_gap.py) | A hand-built saturating core, checked against the magnetic circuit formula | no |
 | [inductance_of_a_coil.py](https://github.com/pole-craft/pole-craft/blob/main/examples/inductance_of_a_coil.py) | Inductance of a hand-built coil from its flux linkage, checked against a formula | no |
+| [magnet_temperature.py](https://github.com/pole-craft/pole-craft/blob/main/examples/magnet_temperature.py) | Torque and back-EMF of a motor with M270-35A steel and a magnet at three temperatures | yes |
 
 The motor examples use a placeholder steel curve and a stand-in magnet, not the grades the design names, so their numbers show how the tool behaves, not how the motor performs.
 
@@ -161,7 +162,7 @@ This is a check of the 2D solver and the studies only. Both programs use the sam
 - [x] Parametric geometry and meshing for QDD motors (outer rotor; inner rotor to follow)
 - [x] 2D field solver with saturated steel and permanent magnets (any rotor position)
 - [x] Rotation: cogging torque, back-EMF, torque ripple
-- [ ] Material and winding library
+- [x] Material and winding library
 - [ ] Losses, torque-speed curve and efficiency map
 - [ ] Parallel and GPU-accelerated design sweeps
 - [ ] Validation against FEMM and measured motors

@@ -14,6 +14,7 @@ EXAMPLES = {
     "choose_a_solver.py": True,
     "core_with_an_air_gap.py": False,
     "inductance_of_a_coil.py": False,
+    "magnet_temperature.py": True,
     "material_models.py": False,
     "mesh_a_design.py": True,
     "motor_over_a_cycle.py": True,
@@ -318,6 +319,27 @@ def test_motor_over_a_cycle_example(needs_gmsh: None, repo_root: Path, tmp_path:
     assert per_ampere == pytest.approx(by_power_balance, rel=0.01)
     assert per_ampere == pytest.approx(constant * 1.5, rel=0.01)
     assert numbers(lines[at + 3])[0] == pytest.approx(mean, rel=0.01)  # the other method
+    assert list(tmp_path.iterdir()) == []
+
+
+def test_magnet_temperature_example(needs_gmsh: None, repo_root: Path, tmp_path: Path) -> None:
+    done = run_example(repo_root, "magnet_temperature.py", tmp_path)
+    assert done.returncode == 0, done.stderr
+    assert done.stderr == ""
+    lines = done.stdout.splitlines()
+    assert lines[0] == "12 slots, 10 poles, M270-35A steel, placeholder magnet generic_NdFeB_placeholder"
+    assert numbers(lines[1])[0] == pytest.approx(-0.12)
+    rows = [numbers(line) for line in lines[6:9]]
+    assert [row[0] for row in rows] == [20.0, 60.0, 100.0]
+    # Remanence follows its straight line: 0.12 % a kelvin about 20 C.
+    for row in rows:
+        assert row[1] == pytest.approx(1.2 * (1.0 - 0.0012 * (row[0] - 20.0)), abs=1e-4)
+    for column in (2, 3):
+        values = [row[column] for row in rows]
+        assert values[0] > values[1] > values[2]
+        # Torque and back-EMF fall, by less than the remanence does.
+        assert 0.5 < (values[0] - values[2]) / values[0] / 0.096 < 1.0
+    assert 0.2 < rows[0][2] < 0.28 and 3.0 < rows[0][3] < 3.7
     assert list(tmp_path.iterdir()) == []
 
 
