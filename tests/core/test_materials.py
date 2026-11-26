@@ -1414,3 +1414,20 @@ def test_bad_loss_table_is_rejected(
     monkeypatch.setattr(resources, "files", lambda package: tmp_path)
     with pytest.raises(ValueError, match=message):
         load_core_loss("broken")
+
+
+def test_copper_gives_its_specific_heat() -> None:
+    copper = load_material("copper")
+    # 24.435 J/(mol K) over 63.546 g/mol.
+    assert copper.specific_heat == pytest.approx(24.435 / 63.546e-3, rel=1e-3)
+
+
+def test_specific_heat_is_optional_and_checked(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    assert Conductor(1.7e-8, 0.004, 8890.0).specific_heat is None
+    for bad in (0.0, -1.0, math.nan):
+        with pytest.raises(ValueError, match="specific_heat must be a positive number"):
+            Conductor(1.7e-8, 0.004, 8890.0, specific_heat=bad)
+    with pytest.raises(ValueError, match="'specific_heat_J_per_kg_K'"):
+        library_entry(CONDUCTOR + "specific_heat_J_per_kg_K: hot\n", tmp_path, monkeypatch)

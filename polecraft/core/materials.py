@@ -450,6 +450,7 @@ _UNITS = {
     "resistivity_ohm_m": "ohm metre at 20 C",
     "temperature_coefficient_per_K": "per kelvin",
     "density_kg_m3": "kilogram per cubic metre",
+    "specific_heat_J_per_kg_K": "joule per kilogram and kelvin",
     "thickness_mm": "millimetre",
     "saturation_polarisation_T": "tesla",
     "loss_step_T": "tesla",
@@ -466,17 +467,25 @@ _AMBIGUOUS_COERCIVITY_COEFFICIENT = "coercivity_temp_coefficient_per_K"
 
 @dataclass(frozen=True)
 class Conductor:
-    """A winding conductor: resistivity at 20 C, how it rises with temperature, density."""
+    """A winding conductor: resistivity at 20 C, how it rises with temperature, density.
+
+    ``specific_heat``, where the entry gives it, is for the heating of the
+    winding; it takes no part in the field or the resistance.
+    """
 
     resistivity: float  # ohm metre at 20 C
     temperature_coefficient: float  # per kelvin, linear about 20 C
     density: float  # kg/m^3
+    specific_heat: float | None = None  # J/(kg K)
 
     def __post_init__(self) -> None:
         for name in ("resistivity", "temperature_coefficient", "density"):
             value = getattr(self, name)
             if not (math.isfinite(value) and value > 0.0):
                 raise ValueError(f"{name} must be a positive number, not {value}")
+        heat = self.specific_heat
+        if heat is not None and not (math.isfinite(heat) and heat > 0.0):
+            raise ValueError(f"specific_heat must be a positive number, not {heat}")
 
     def resistivity_at(self, temperature: float) -> float:
         """Resistivity in ohm metres at ``temperature`` in degrees Celsius.
@@ -605,10 +614,14 @@ def load_material(name: str) -> BHCurve | Magnet | Conductor:
     if kind == "magnet":
         return _magnet(data, name)
     if kind == "conductor":
+        heat = None
+        if "specific_heat_J_per_kg_K" in data:
+            heat = _number(data, "specific_heat_J_per_kg_K", name)
         return Conductor(
             resistivity=_number(data, "resistivity_ohm_m", name),
             temperature_coefficient=_number(data, "temperature_coefficient_per_K", name),
             density=_number(data, "density_kg_m3", name),
+            specific_heat=heat,
         )
     return _steel(data, name)
 

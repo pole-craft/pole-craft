@@ -163,14 +163,14 @@ def mechanical(
         stator_steel=totals["stator"],
         rotor_steel=totals["rotor"],
         magnets=totals["magnet"],
-        copper=_copper_mass(winding),
+        copper=copper_mass(winding),
         rotor_inertia=inertia,
         outer_radius=geometry.outer_radius,
         stack_length=stack,
     )
 
 
-def _copper_mass(winding: PhaseWinding) -> float:
+def copper_mass(winding: PhaseWinding) -> float:
     """Mass of the wire of all three phases in kg: length times area times density."""
     area = winding.strands * wire_area(winding.wire_diameter)
     return 3.0 * winding.wire_length * area * winding.conductor.density

@@ -32,6 +32,15 @@ releases.
   now carry the core loss (`flux_map(..., losses=...)`, `FluxMap.core_loss`)
   from the same solves. Not included: friction and windage, magnet and
   winding eddy currents, and the drive's own loss.
+- End-effect correction (`polecraft.studies.end_effect`): a factor for
+  the flux of a finite stack against the 2D model, from a separate 2D model
+  of the stack end (magnet end leakage, fringing into the stator's end
+  face, magnet overhang). An approximation: leakage between poles at the
+  ends and slotting are left out.
+- Stall heating (`polecraft.studies.stall_heating`): how long the worst
+  phase can hold a current at standstill before reaching a temperature
+  limit, with the copper heating alone; `stall_current` gives the current
+  for a hold time. Copper now carries its specific heat.
 - Mechanical metrics (`polecraft.studies.mechanical`): mass of the stator
   steel, rotor steel, magnets and copper, rotor inertia, torque density and
   the motor constant. Active parts only; densities come from the material

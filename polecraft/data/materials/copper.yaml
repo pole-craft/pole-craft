@@ -3,6 +3,12 @@
 # coefficient 0.00393 per kelvin, and density 8.89 g/cm3. Copied from NBS
 # Handbook 100, Copper Wire Tables (1966), part I section 1.1 d ("Density of
 # Copper", page 4) and the data listed there for tables 10 to 14.
+#
+# The specific heat is not part of that standard. It is the heat capacity of
+# crystalline copper at 25 C, 24.435 J/(mol K) (The NBS Tables of Chemical
+# Thermodynamic Properties, 1982), divided by its molar mass, 63.546 g/mol:
+# 384.5 J/(kg K). It rises by a few percent between 25 and 150 C; the
+# stall-heating estimate takes it as constant.
 name: copper
 kind: conductor
 description: Annealed copper winding wire.
@@ -10,3 +16,4 @@ source: International Annealed Copper Standard (IEC 60028), 20 C, as given in NB
 resistivity_ohm_m: 1.7241e-8
 temperature_coefficient_per_K: 0.00393
 density_kg_m3: 8890
+specific_heat_J_per_kg_K: 384.5
