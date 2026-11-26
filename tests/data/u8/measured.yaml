@@ -1,0 +1,77 @@
+# Measured figures for the U8-class motor of the MIT Mini Cheetah actuator.
+#
+# Sources (not copied here; only numbers taken from them):
+#   katz2018: B. G. Katz, "A low cost modular actuator for dynamic robots",
+#             SM thesis, Massachusetts Institute of Technology, 2018.
+#   urs2022:  K. Urs, C. Enninful Adu, E. J. Rouse and T. Y. Moore,
+#             "Alternative metrics to select motors for quasi-direct drive
+#             actuators", arXiv:2202.12365, 2022. Its U8 figures are quoted
+#             from U. H. Lee, C.-W. Pan and E. J. Rouse, IROS 2019.
+#
+# Digitised points come from the vector paths of the thesis's plots, so
+# they follow the drawn line exactly; the axes were scaled from the tick
+# marks. The thesis does not say how many tests the lines average.
+
+sources:
+  katz2018: >-
+    B. G. Katz, A low cost modular actuator for dynamic robots, SM thesis,
+    MIT, 2018
+  urs2022: >-
+    K. Urs, C. Enninful Adu, E. J. Rouse and T. Y. Moore, Alternative
+    metrics to select motors for quasi-direct drive actuators,
+    arXiv:2202.12365, 2022, table 1 and figure 1
+
+# Figure 2-3 (left), torque against current, motor without its gearbox on
+# the dynamometer (section 2.5.1). Current is the controller's: the peak of
+# the line current, with all of it on the q axis. Points every 2.5 A.
+torque_against_current:
+  source: katz2018, figure 2-3
+  current_A: [0.0, 2.5, 5.0, 7.5, 10.0, 12.5, 15.0, 17.5, 20.0, 22.5, 25.0,
+              27.5, 30.0, 32.5, 35.0, 37.5, 40.0]
+  torque_Nm: [0.0197, 0.2066, 0.4077, 0.6106, 0.8070, 1.0028, 1.1943, 1.3803,
+              1.5621, 1.7458, 1.9089, 2.0681, 2.2166, 2.3592, 2.4979, 2.6252,
+              2.7467]
+  stated_constant_drop: 0.12      # "torque constant dropping by 12 %", text
+
+# Figure 2-22 and section 2.5.2, cogging torque at the rotor.
+cogging:
+  source: katz2018, section 2.5.2 and figure 2-22
+  peak_Nm: 0.045                  # stated
+  rms_Nm: 0.0228                  # stated
+  digitised_rms_Nm: 0.0226        # of the digitised curve, as a check
+  # Amplitudes of the digitised curve's harmonics, in N m, against
+  # electrical angle. The 12th is the slot harmonic of 36 slots and 42
+  # poles; the 1st comes from build tolerances.
+  harmonic_1_Nm: 0.0177
+  harmonic_12_Nm: 0.0188
+
+# Section 2.3.1: "very low inductance, around 30 uH", taken from the
+# current step response (section 2.4). Phase value as the dq current
+# controller sees it.
+inductance_H: 30.0e-6
+
+# Section 2.5.3, from a thermal camera: winding thermal resistance and
+# thermal mass, still air, and the continuous rating that follows.
+thermal:
+  source: katz2018, section 2.5.3
+  resistance_K_per_W: 1.23
+  capacity_J_per_K: 32.0
+  ambient_C: 25.0
+  limit_C: 100.0
+  continuous_loss_W: 60.0
+  continuous_current_A: 15.4      # peak phase, with the resistance 30 % up
+
+# The T-Motor U8 itself, from urs2022 table 1 (quoting Lee, Pan and Rouse),
+# and the turns per coil counted by eye in its figure 1.
+u8:
+  source: urs2022
+  connection: delta
+  phase_resistance_ohm: 0.279     # of one delta phase
+  # Of one delta phase. The table gives 0.069 in mH: its unit character
+  # does not survive text extraction, but the RI50 beside it reads 2.559
+  # there and 2559 uH in the text.
+  effective_inductance_H: 69.0e-6
+  torque_constant_Nm_per_A: 0.14
+  gap_radius_mm: 40.8
+  stack_length_mm: 8.0
+  turns_per_coil: 16              # "approximately", by visual inspection

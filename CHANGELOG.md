@@ -41,6 +41,11 @@ releases.
   phase can hold a current at standstill before reaching a temperature
   limit, with the copper heating alone; `stall_current` gives the current
   for a hold time. Copper now carries its specific heat.
+- Comparison with a measured motor (`docs/u8_comparison.md`): a U8-class
+  motor, as published for the MIT Mini Cheetah actuator, with its turns
+  fitted to the measured torque constant. The model understates the fall of
+  the torque constant at peak current (2 % against 13 %) and gives about
+  twice the measured inductance; both gaps are reported, not tuned away.
 - Mechanical metrics (`polecraft.studies.mechanical`): mass of the stator
   steel, rotor steel, magnets and copper, rotor inertia, torque density and
   the motor constant. Active parts only; densities come from the material

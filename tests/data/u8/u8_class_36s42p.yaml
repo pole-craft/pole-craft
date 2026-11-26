@@ -1,0 +1,75 @@
+# U8-class outer-rotor motor, as used in the MIT Mini Cheetah actuator.
+#
+# Stated by the sources:
+#   - air-gap diameter 81 mm, stack length 8.2 mm, 21 pole pairs
+#     (B. G. Katz, "A low cost modular actuator for dynamic robots",
+#     SM thesis, MIT, 2018, section 2.2.1);
+#   - 36 slots: assumed, as in the T-Motor U8. It agrees with the cogging
+#     the thesis measured, mostly at 12 times the electrical frequency
+#     (figure 2-22): LCM(36, 42) / 21 = 12.
+#
+# Everything else is an ESTIMATE, chosen as typical of motors of this size
+# and not measured: the gap, the magnet and yoke thicknesses, the magnet
+# arc, the tooth and slot dimensions and the wire. The steel and magnet are
+# the library's placeholders, not the motor's real grades, which the sources
+# do not give.
+#
+# Winding: the U8 is delta-connected with about 16 turns per coil (Urs et
+# al., arXiv:2202.12365, table 1 and figure 1). This file describes the
+# star winding that behaves the same at the terminals: a delta of N turns
+# per coil acts as a star of N / sqrt(3) turns. The thesis's currents are
+# line currents, which are the star's phase currents. The turns below are
+# fitted to the thesis's low-current torque constant (calibration, not a
+# prediction). The wire is an estimate; the resistance it gives is
+# compared with the sources, not fitted to them.
+#
+# The measured figures and the comparison are in measured.yaml beside this
+# file and in docs/u8_comparison.md.
+#
+# Lengths are in millimetres.
+
+format_version: 1
+type: qdd_outer
+slots: 36
+poles: 42
+
+geometry:
+  air_gap_mm: 0.5                 # estimate
+  rotor:
+    outer_diameter_mm: 90.5       # 81 mm gap diameter + gap + magnets + yoke
+    yoke_thickness_mm: 2.5        # estimate
+  magnet:
+    thickness_mm: 2.0             # estimate
+    arc_fraction: 0.85            # estimate
+    magnetisation: parallel
+  stator:
+    tooth_width_mm: 3.2           # estimate
+    slot_opening_mm: 1.5          # estimate
+    tooth_tip_height_mm: 0.5      # estimate
+    tooth_tip_taper_mm: 0.5       # estimate
+    slot_depth_mm: 8.0            # estimate
+    yoke_thickness_mm: 2.5        # estimate
+
+axial:
+  stack_length_mm: 8.2            # stated
+  magnet_overhang_mm: 0           # estimate
+  skew_deg: 0
+  end_winding_overhang_mm: null
+
+magnet:
+  material: generic_NdFeB_placeholder
+  temperature_C: 25               # bench test at room temperature
+
+winding:
+  wire_diameter_mm: 0.5           # estimate
+  insulated_diameter_mm: null
+  turns_per_coil: 7               # fitted, see above
+  parallel_strands: 2             # estimate
+  conductor: copper
+  connection: star                # star equivalent of the delta winding
+  temperature_C: 25
+
+steel:
+  stator: generic_35A_placeholder
+  rotor: generic_35A_placeholder
+  stacking_factor: 0.95           # estimate
