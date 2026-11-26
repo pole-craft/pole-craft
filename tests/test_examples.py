@@ -22,6 +22,7 @@ EXAMPLES = {
     "slice_against_whole_machine.py": True,
     "solve_a_motor.py": True,
     "torque_against_current.py": True,
+    "torque_speed_and_efficiency.py": True,
     "winding_layouts.py": False,
 }
 NEEDS_GMSH = sorted(name for name, needed in EXAMPLES.items() if needed)
@@ -340,6 +341,53 @@ def test_magnet_temperature_example(needs_gmsh: None, repo_root: Path, tmp_path:
         # Torque and back-EMF fall, by less than the remanence does.
         assert 0.5 < (values[0] - values[2]) / values[0] / 0.096 < 1.0
     assert 0.2 < rows[0][2] < 0.28 and 3.0 < rows[0][3] < 3.7
+    assert list(tmp_path.iterdir()) == []
+
+
+def test_torque_speed_and_efficiency_example(
+    needs_gmsh: None, repo_root: Path, tmp_path: Path
+) -> None:
+    done = run_example(repo_root, "torque_speed_and_efficiency.py", tmp_path)
+    assert done.returncode == 0, done.stderr
+    assert done.stderr == ""  # the map's speeds keep the loss data inside its fitted range
+    lines = done.stdout.splitlines()
+    assert lines[0] == "12 slots, 10 poles, M270-35A steel, placeholder magnet generic_NdFeB_placeholder"
+    # 24 V bus: 24 / sqrt 3 per star phase; 20 A in a terminal is 20 A in a star phase.
+    assert numbers(lines[1])[2:] == pytest.approx([13.86, 20.0], abs=0.01)
+    flat = next(line for line in lines if line.startswith("Most torque"))
+    base_speed, base_torque = numbers(flat)[0], numbers(flat)[1]
+    assert 1000.0 < base_speed < 1400.0 and 0.8 < base_torque < 1.0
+
+    # Torque-speed curve: flat up to the base speed, then falling; the current
+    # stays within its limit and the power peaks and then falls off.
+    start = lines.index("   rpm   torque   current   power") + 2
+    rows = [numbers(line) for line in lines[start:start + 6]]
+    assert [row[0] for row in rows] == [0.0, 600.0, 1200.0, 1800.0, 2400.0, 3000.0]
+    torque, current, power = ([row[column] for row in rows] for column in (1, 2, 3))
+    assert torque[0] == pytest.approx(base_torque, abs=1e-3)
+    assert torque[1] == pytest.approx(torque[0], abs=1e-3)  # below the base speed
+    assert torque == sorted(torque, reverse=True) and torque[-1] < 0.6 * torque[0]
+    assert max(current) <= 20.0 + 1e-6 and current[-1] < current[0]
+    assert power[0] == 0.0 and max(power) > power[-1] > power[1]
+    for rpm, t, watts in zip((row[0] for row in rows), torque, power):
+        assert watts == pytest.approx(t * rpm * 3.141592653589793 / 30.0, abs=0.15)
+
+    # Efficiency map: higher with speed at light load, lower with torque at any
+    # speed, and a dash where the drive cannot reach the point.
+    start = next(i for i, line in enumerate(lines) if line.startswith("   rpm      0.1")) + 1
+    table = lines[start:start + 5]
+    cells = [line.split()[1:] for line in table]
+    assert [line.split()[0] for line in table] == ["600", "1200", "1800", "2400", "3000"]
+    assert [row[-1] for row in cells][-2:] == ["-", "-"]  # the top speeds miss the heaviest load
+    for row in cells:
+        reached = [float(cell) for cell in row if cell != "-"]
+        assert reached == sorted(reached, reverse=True)
+        assert all(0.0 < value < 100.0 for value in reached)
+    light = [float(row[0]) for row in cells]
+    assert light == sorted(light) and 55.0 < light[0] < 70.0 and 80.0 < light[-1] < 92.0
+    assert cells[0].count("-") == 0 and cells[-1].count("-") >= 1
+    best = next(line for line in lines if line.startswith("Best point"))
+    assert numbers(best)[0] == pytest.approx(light[-1], abs=0.05)
     assert list(tmp_path.iterdir()) == []
 
 

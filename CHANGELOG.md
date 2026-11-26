@@ -5,7 +5,20 @@ numbers follow [semantic versioning](https://semver.org); while the version
 is 0.0.x the design-file format and the Python interface may change between
 releases.
 
-## [Unreleased]
+## [0.0.5] - 2026-11-26
+
+The first release with motor-level answers. From the 2D field it now gives
+the copper and core loss, flux and torque maps, the torque-speed curve and
+the efficiency map under a drive's voltage and current limits, torque against
+current with saturation, a demagnetisation check, mass, rotor inertia and
+the motor constant, an end-effect correction for a short stack, and a stall
+heating estimate. A U8-class motor is compared with its published
+measurements, and the gaps are reported in `docs/u8_comparison.md`. The
+commands and studies still take a stand-in steel and magnet rather than the
+materials a design names, and there is no real magnet grade yet, so the
+numbers show how the tool behaves, not how a motor performs.
+
+### Added
 
 - Copper loss study (`polecraft.studies.copper_loss`): the loss of all three
   phases for a peak phase current and a winding temperature, from the DC
@@ -65,6 +78,49 @@ releases.
 - `core_loss_density` and `material_flux_density` in `polecraft.core.post`:
   loss per kilogram from any flux density waveform, and the field a turning
   triangle sees in its own frame.
+
+- Example `examples/torque_speed_and_efficiency.py`: a flux map of the
+  12-slot, 10-pole motor, then its torque-speed curve and efficiency map on a
+  24 V drive.
+
+### Changed
+
+- Copper (`copper.yaml`) carries a specific heat, 384.5 J/(kg K), worked
+  out from its molar heat capacity; `Conductor.specific_heat` is optional,
+  and an entry without one cannot be used for stall heating.
+- Flux maps can carry the core loss (`flux_map(..., losses=...)`), from the
+  same solves as the flux linkages.
+- `copper_mass` in `polecraft.studies.mechanical` is public; it was private.
+
+### Known limits
+
+- No real magnet grade, and the commands and studies still use a stand-in
+  steel and magnet, not the materials a design names. Do not use the
+  results to judge a motor.
+- Compared with a published U8-class motor (`docs/u8_comparison.md`), with
+  its turns fitted to the measured torque constant, the model understates
+  how far the torque constant falls at peak current (2 % against 13 %) and
+  gives about twice the measured inductance. Neither gap is explained, and
+  neither was tuned away. The motor's dimensions, steel and magnet are
+  estimates and placeholders.
+- The end-effect factor leaves out leakage between poles at the ends and
+  slotting. It finds a loss of only 0.4 % of the 2D flux for the reference
+  motor, where short wide motors are expected to lose more; the 3D check is
+  still to come.
+- Stall heating takes the copper alone, with no heat leaving it, so it
+  answers how long a hold of a few seconds can last, not a continuous
+  rating. There is no thermal simulation.
+- The efficiency map counts copper and core loss only: no friction,
+  windage, magnet or winding eddy currents, and none for the drive. Core loss
+  is that of the sheet as measured in a sine-wave field, with no allowance
+  for stamping or stress. The loss coefficients are fitted over 50 to
+  1000 Hz and warn outside it.
+- Copper loss uses the DC resistance, with no skin or proximity effect.
+- The cogging torque of the 36-slot, 42-pole motors still does not settle
+  with the mesh, so it is an order of magnitude only.
+- The limits of 0.0.4 still hold where this list does not replace them: the
+  studies are run from Python, the model is 2D, outer-rotor surface-magnet
+  motors only, and solving needs the optional Gmsh package.
 
 ## [0.0.4] - 2026-11-24
 
@@ -543,6 +599,7 @@ does not report torque, back-EMF or losses.
 - Meshing cannot be interrupted part-way; Ctrl-C takes effect when the mesher
   returns.
 
+[0.0.5]: https://github.com/pole-craft/pole-craft/releases/tag/v0.0.5
 [0.0.4]: https://github.com/pole-craft/pole-craft/releases/tag/v0.0.4
 [0.0.3]: https://github.com/pole-craft/pole-craft/releases/tag/v0.0.3
 [0.0.2]: https://github.com/pole-craft/pole-craft/releases/tag/v0.0.2
