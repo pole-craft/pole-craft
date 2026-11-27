@@ -11,6 +11,7 @@ releases.
 
 - `polecraft.benchmark`: `time_machine` times a solve section by section (geometry, mesh, turning the rotor, problem, solve, post-processing) for one rotor angle or a sweep, and `machine_info` records the processor, memory and software versions.
 - `femm_script(..., timing=True)` makes FEMM report its own time by stage.
+- Sweeps (`polecraft.studies.sweep`): `run_sweep` evaluates every combination of design values, named by their path in the design file (`winding.wire_diameter_mm`, `magnet.material`). A case that fails, including a design the checks refuse, is recorded with its error and the sweep goes on. Each finished case is written to a store file at once, so a stopped sweep run again skips the cases already done. The result table, with each case's time and design warnings, can be written as CSV.
 - `benchmarks/femm_comparison.py` (a manual tool) and its recorded results, `benchmarks/baseline.json`, with `docs/benchmarks.md`: Pole-Craft against FEMM 4.2 on the 36-slot, 42-pole reference motor, with node counts matched. On this machine Pole-Craft's whole-machine solve was 4 to 8 times faster for one static solve and 9 to 37 times faster for a 12-angle sweep. FEMM's own times varied by up to a factor of two between runs.
 
 ## [0.0.5] - 2026-11-26
