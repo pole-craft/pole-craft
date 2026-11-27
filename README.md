@@ -195,7 +195,7 @@ Without the `mesh` extra everything except meshing works, and the meshing tests 
 
 The project is just starting. Ideas, questions, bug reports and motor data for validation are welcome: please [open an issue](https://github.com/pole-craft/pole-craft/issues).
 
-How the package fits together, and how to add a machine type, is described in [docs/architecture.md](https://github.com/pole-craft/pole-craft/blob/main/docs/architecture.md). How its results compare with a published, measured motor of this class, and where they disagree, is in [docs/u8_comparison.md](https://github.com/pole-craft/pole-craft/blob/main/docs/u8_comparison.md).
+How the package fits together, and how to add a machine type, is described in [docs/architecture.md](https://github.com/pole-craft/pole-craft/blob/main/docs/architecture.md). How its results compare with a published, measured motor of this class, and where they disagree, is in [docs/u8_comparison.md](https://github.com/pole-craft/pole-craft/blob/main/docs/u8_comparison.md).  How fast it is, against FEMM, is in [docs/benchmarks.md](https://github.com/pole-craft/pole-craft/blob/main/docs/benchmarks.md).
 
 ## License
 

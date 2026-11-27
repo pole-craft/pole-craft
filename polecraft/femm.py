@@ -51,6 +51,7 @@ def femm_script(
     gap_points: int = 3600,
     surround: float | None = None,
     rotor_angles: Sequence[float] | None = None,
+    timing: bool = False,
 ) -> str:
     """The text of a FEMM Lua script that solves a machine and writes results.
 
@@ -75,6 +76,14 @@ def femm_script(
     on the rotor's side of the middle of the air gap is turned to it as one
     group and FEMM meshes again; each magnet's direction is set afresh, turned
     with the rotor. Without it every case is at angle 0.
+
+    With ``timing`` the script also writes how long FEMM took, in seconds, for
+    drawing the model (first case only) and, for each case, setting it up
+    (turning the rotor, currents), meshing, solving, loading the solution and
+    reading the results. In the first case the mesh is made by its own call,
+    so that its time is separate from the solve. In later cases it is made
+    inside the solve, and the mesh time written is about zero. For timing,
+    keep ``gap_points`` small.
     """
     if not math.isclose(geometry.span_angle, 2.0 * math.pi, rel_tol=1e-9):
         raise ValueError("the FEMM model needs the whole machine: build_geometry(full=True)")
@@ -107,6 +116,7 @@ def femm_script(
     lines = [
         "-- Written by Pole-Craft. Run with: femm.exe -lua-script=<this file> -windowhide",
         "newdocument(0)",
+        *(["t_start = clock()"] if timing else []),
         f'mi_probdef(0, "millimeters", "planar", 1e-8, {_mm(geometry.stack_length)}, 30)',
         # Newer builds refine the mesh at every corner by themselves; the
         # sizes given here are to decide it, so that fineness means something.
@@ -251,6 +261,10 @@ def femm_script(
     turned = 0.0
     for number, case in enumerate(cases):
         lines.append(f'write(out, "case {number}\\n")')
+        if timing:
+            lines.append("t0 = clock()")
+            if number == 0:
+                lines.append('write(out, format("time draw %.6f\\n", t0 - t_start))')
         if rotor_angles is not None:
             angle = rotor_angles[number]
             if angle != turned:
@@ -271,7 +285,25 @@ def femm_script(
             lines.append(f'write(out, "rotor_angle {angle!r}\\n")')
         for phase in phases:
             lines.append(f'mi_modifycircprop("{phase}", 1, {float(case[phase])!r})')
-        lines += ["mi_analyze(1)", "mi_loadsolution()"]
+        if timing:
+            lines += ["t1 = clock()", 'write(out, format("time setup %.6f\\n", t1 - t0))']
+            if number == 0:
+                # A separate mesh call on a model that has been turned made
+                # FEMM 4.2 stop (a hidden message, as far as could be told),
+                # so only the first case, which is not turned, is meshed apart.
+                lines.append("mi_createmesh()")
+            lines += [
+                "t2 = clock()",
+                'write(out, format("time mesh %.6f\\n", t2 - t1))',
+                "mi_analyze(1)",
+                "t3 = clock()",
+                'write(out, format("time solve %.6f\\n", t3 - t2))',
+                "mi_loadsolution()",
+                "t4 = clock()",
+                'write(out, format("time load %.6f\\n", t4 - t3))',
+            ]
+        else:
+            lines += ["mi_analyze(1)", "mi_loadsolution()"]
         lines += [
             'write(out, format("nodes %d\\n", mo_numnodes()))',
             'write(out, format("elements %d\\n", mo_numelements()))',
@@ -290,8 +322,10 @@ def femm_script(
             "  a, bx, by = mo_getpointvalues(gx[k], gy[k])",
             '  write(out, format("b %.9g %.9g\\n", bx, by))',
             "end",
-            "mo_close()",
         ]
+        if timing:
+            lines.append('write(out, format("time post %.6f\\n", clock() - t4))')
+        lines.append("mo_close()")
     lines += ['write(out, "end\\n")', "closefile(out)", "mi_close()", "quit()"]
     return "\n".join(lines) + "\n"
 
@@ -304,7 +338,8 @@ def read_results(path: str | Path) -> list[dict]:
     ``current`` and ``flux_linkage`` (amperes and webers, by phase),
     ``nodes`` and ``elements`` of FEMM's mesh, ``radius`` (metres) and
     ``angles`` (radians) of the points in the air gap, and ``radial`` and
-    ``tangential``, the flux density there in tesla.
+    ``tangential``, the flux density there in tesla. A script written with
+    ``timing`` also gives ``times``, FEMM's seconds by stage.
     """
     text = Path(path).read_text(encoding="utf-8")
     rows = [line.split() for line in text.splitlines() if line.strip()]
@@ -326,6 +361,8 @@ def read_results(path: str | Path) -> list[dict]:
             cases[-1]["torque"] = float(row[1])
         elif key == "rotor_angle":
             cases[-1]["rotor_angle"] = float(row[1])
+        elif key == "time":
+            cases[-1].setdefault("times", {})[row[1]] = float(row[2])
         elif key == "circuit":
             cases[-1]["current"][row[1]] = float(row[2])
             cases[-1]["flux_linkage"][row[1]] = float(row[3])

@@ -564,6 +564,19 @@ def test_results_are_read_back(tmp_path: Path) -> None:
     assert first["tangential"] == pytest.approx([0.0, 0.0, 0.0, 0.1], abs=1e-15)
 
 
+def test_times_are_read_back_when_there_are_any(tmp_path: Path) -> None:
+    path = tmp_path / "results.txt"
+    timed = RESULTS.replace(
+        "case 0\n", "case 0\ntime draw 3.5\ntime mesh 0.5\ntime solve 42\n", 1
+    ).replace("case 1\n", "case 1\ntime mesh 0.25\n", 1)
+    path.write_text(timed, encoding="utf-8")
+    first, second = read_results(path)
+    assert first["times"] == {"draw": 3.5, "mesh": 0.5, "solve": 42.0}
+    assert second["times"] == {"mesh": 0.25}
+    path.write_text(RESULTS, encoding="utf-8")
+    assert all("times" not in case for case in read_results(path))
+
+
 def test_results_that_stop_early_are_refused(tmp_path: Path) -> None:
     path = tmp_path / "results.txt"
     path.write_text(RESULTS.replace("end\n", ""), encoding="utf-8")
@@ -583,6 +596,45 @@ def test_results_that_stop_early_are_refused(tmp_path: Path) -> None:
 def test_the_script_writes_what_the_reader_reads(script: str) -> None:
     written = set(re.findall(r'write\(out, (?:format\()?"(\w+)', script))
     assert written == {"radius_mm", "case", "nodes", "elements", "torque", "circuit", "b", "end"}
+
+
+# Timing
+
+TIMED = ["setup", "mesh", "solve", "load", "post"]
+
+
+def test_nothing_is_timed_unless_asked(script: str) -> None:
+    assert "clock" not in script and "mi_createmesh" not in script
+
+
+def test_a_timed_script_times_each_stage_of_each_case_in_order(geometry, materials, cases) -> None:
+    text = femm_script(geometry, materials, cases, "t.txt", gap_points=8, timing=True)
+    assert text.index("t_start = clock()") < text.index("mi_addnode")
+    pieces = per_case(text)
+    assert len(pieces) == len(cases)
+    for number, piece in enumerate(pieces):
+        written = re.findall(r'format\("time (\w+) ', piece)
+        assert written == (["draw"] if number == 0 else []) + TIMED
+        # The first case's mesh is made by its own call, so that it is not counted
+        # in the solve. A turned model is not: a separate mesh call stopped FEMM.
+        assert ("mi_createmesh" in piece) == (number == 0)
+        assert piece.index("mi_analyze") < piece.index("mi_loadsolution")
+        assert piece.index("time mesh") < piece.index("mi_analyze")
+        assert piece.index("time solve") < piece.index("mi_loadsolution")
+    assert set(re.findall(r'write\(out, (?:format\()?"(\w+)', text)) == {
+        "radius_mm", "case", "nodes", "elements", "torque", "circuit", "b", "time", "end"
+    }
+
+
+def test_timing_does_not_change_the_model(geometry, materials, cases) -> None:
+    plain = femm_script(geometry, materials, cases, "t.txt", gap_points=8)
+    timed = femm_script(geometry, materials, cases, "t.txt", gap_points=8, timing=True)
+    kept = [
+        line
+        for line in timed.splitlines()
+        if "clock()" not in line and 'format("time ' not in line and line != "mi_createmesh()"
+    ]
+    assert kept == plain.splitlines()
 
 
 # Turning the rotor

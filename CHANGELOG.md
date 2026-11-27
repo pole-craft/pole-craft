@@ -5,6 +5,14 @@ numbers follow [semantic versioning](https://semver.org); while the version
 is 0.0.x the design-file format and the Python interface may change between
 releases.
 
+## [Unreleased]
+
+### Added
+
+- `polecraft.benchmark`: `time_machine` times a solve section by section (geometry, mesh, turning the rotor, problem, solve, post-processing) for one rotor angle or a sweep, and `machine_info` records the processor, memory and software versions.
+- `femm_script(..., timing=True)` makes FEMM report its own time by stage.
+- `benchmarks/femm_comparison.py` (a manual tool) and its recorded results, `benchmarks/baseline.json`, with `docs/benchmarks.md`: Pole-Craft against FEMM 4.2 on the 36-slot, 42-pole reference motor, with node counts matched. On this machine Pole-Craft's whole-machine solve was 4 to 8 times faster for one static solve and 9 to 37 times faster for a 12-angle sweep. FEMM's own times varied by up to a factor of two between runs.
+
 ## [0.0.5] - 2026-11-26
 
 The first release with motor-level answers. From the 2D field it now gives
