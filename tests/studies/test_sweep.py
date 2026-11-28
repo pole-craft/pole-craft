@@ -3,6 +3,7 @@
 import csv
 import json
 import math
+import os
 from pathlib import Path
 
 import numpy as np
@@ -299,37 +300,108 @@ def test_a_damaged_case_line_is_reported(base, tmp_path) -> None:
 # With a field solve
 
 
-def test_a_sweep_of_magnet_grade_against_wire_size_with_a_field_solve(base, tmp_path) -> None:
+@pytest.fixture
+def evaluations(monkeypatch):
+    """The module of top-level evaluations, importable by worker processes too."""
+    monkeypatch.syspath_prepend(str(Path(__file__).parent))
+    import sweep_evaluations
+
+    return sweep_evaluations
+
+
+def test_a_sweep_of_magnet_grade_against_wire_size_with_a_field_solve(base, evaluations, tmp_path) -> None:
     pytest.importorskip("gmsh", reason="meshing needs the optional Gmsh package")
-    from polecraft.core.materials import Magnet, load_material
-    from polecraft.core.mesh import build_mesh
-    from polecraft.core.post import torque
-    from polecraft.core.problem import build_problem
-    from polecraft.core.solver import solve
-    from polecraft.core.winding import phase_winding
-    from polecraft.machines import machine_for
-
-    # Placeholder magnets, not datasheet grades: only their order matters here.
-    grades = {"N42SH": Magnet(remanence=1.2, relative_permeability=1.05),
-              "N52": Magnet(remanence=1.4, relative_permeability=1.05)}
-    steel = load_material("generic_35A_placeholder")
-
-    def evaluate(design):
-        machine = machine_for(design)
-        mesh = build_mesh(machine.build_geometry(), size=2.0)
-        materials = {design.steel.stator: steel, design.magnet.material: grades[design.magnet.material]}
-        problem = build_problem(machine, mesh, materials, current=5.0)
-        return {"torque": torque(problem, solve(problem)),
-                "resistance": phase_winding(machine).resistance()}
-
     lists = {GRADE: ["N42SH", "N52"], WIRE: [0.3, 0.4]}
-    sweep = run_sweep(base, lists, evaluate, store=tmp_path / "sweep.jsonl")
+    sweep = run_sweep(base, lists, evaluations.field, store=tmp_path / "sweep.jsonl")
     assert len(sweep.ok) == 4
     by_case = {(case.values[GRADE], case.values[WIRE]): case.results for case in sweep.cases}
     for wire in (0.3, 0.4):
         assert by_case[("N52", wire)]["torque"] > by_case[("N42SH", wire)]["torque"] > 0.0
-    for grade in grades:
+    for grade in ("N42SH", "N52"):
         # Resistance goes as one over the wire's area; the field does not see the wire.
         thin, thick = by_case[(grade, 0.3)], by_case[(grade, 0.4)]
         assert thin["resistance"] / thick["resistance"] == pytest.approx((0.4 / 0.3) ** 2, rel=1e-9)
         assert thin["torque"] == pytest.approx(thick["torque"], rel=1e-9)
+
+
+# In parallel
+
+
+def _same_cases(first, second, ignore=()):
+    """Cases equal apart from their times and the named results."""
+    assert len(first.cases) == len(second.cases)
+    for one, other in zip(first.cases, second.cases):
+        assert one.values == other.values and one.status == other.status
+        assert one.error == other.error and one.warnings == other.warnings
+        assert {k: v for k, v in one.results.items() if k not in ignore} == {
+            k: v for k, v in other.results.items() if k not in ignore
+        }
+
+
+def test_parallel_results_equal_serial_results(base, evaluations) -> None:
+    lists = {WIRE: [0.3, 0.35, 0.4], GRADE: ["N42SH", "N52"], TURNS: [16, 20]}
+    serial = run_sweep(base, lists, evaluations.copper)
+    parallel = run_sweep(base, lists, evaluations.copper, workers=3)
+    assert parallel.workers == 3 and serial.workers == 1
+    _same_cases(serial, parallel, ignore=("pid",))
+    assert len(parallel.failed) == 4  # the 0.35 mm cases, recorded as in a serial run
+    # The cases ran in other processes than this one.
+    assert os.getpid() not in {case.results["pid"] for case in parallel.ok}
+
+
+def test_parallel_field_solves_equal_serial_ones(base, evaluations) -> None:
+    pytest.importorskip("gmsh", reason="meshing needs the optional Gmsh package")
+    lists = {GRADE: ["N42SH", "N52"], WIRE: [0.3, 0.4]}
+    serial = run_sweep(base, lists, evaluations.field)
+    parallel = run_sweep(base, lists, evaluations.field, workers=2)
+    assert len(parallel.ok) == 4
+    _same_cases(serial, parallel)  # the same numbers, not only close ones
+
+
+def test_a_parallel_sweep_stores_and_resumes_like_a_serial_one(base, evaluations, tmp_path) -> None:
+    store = tmp_path / "sweep.jsonl"
+    lists = {WIRE: [0.3, 0.35, 0.4], GRADE: ["N42SH", "N52"]}
+    lines = []
+    first = run_sweep(base, lists, evaluations.copper, store=store, workers=2, progress=lines.append)
+    assert sorted(line.split()[1] for line in lines) == sorted(f"{n}/6" for n in range(1, 7))
+    assert len(store.read_text(encoding="utf-8").splitlines()) == 7
+    evaluate = Counting()
+    again = run_sweep(base, lists, evaluate, store=store, retry_failed=False)
+    assert evaluate.calls == [] and all(case.resumed for case in again.cases)
+    _same_cases(first, again)
+
+
+def test_more_workers_than_cases_uses_one_a_case(base, evaluations) -> None:
+    sweep = run_sweep(base, {WIRE: [0.3, 0.4]}, evaluations.copper, workers=None)
+    assert sweep.workers <= 2 and len(sweep.ok) == 2
+    assert run_sweep(base, {WIRE: [0.3, 0.4]}, evaluations.copper, workers=8).workers == 2
+    assert "with 2 workers" in run_sweep(base, {WIRE: [0.3, 0.4]}, evaluations.copper, workers=2).report()
+
+
+def test_a_crashed_worker_fails_its_cases_and_the_sweep_goes_on(base, evaluations, tmp_path) -> None:
+    store = tmp_path / "sweep.jsonl"
+    lists = {WIRE: [0.3, 0.35, 0.4, 0.45]}
+    sweep = run_sweep(base, lists, evaluations.crash, store=store, workers=2)
+    assert len(sweep.cases) == 4
+    crashed = next(case for case in sweep.cases if case.values[WIRE] == 0.4)
+    assert not crashed.ok and "worker process stopped" in crashed.error
+    # Cases lost with the pool are retried from the store; the one that crashes fails again.
+    evaluate = Counting()
+    again = run_sweep(base, lists, evaluate, store=store)
+    assert len(evaluate.calls) == len(sweep.failed) and len(again.ok) == 4
+
+
+@pytest.mark.parametrize("workers", [0, -2, 1.5, True, "4"])
+def test_bad_worker_counts_are_refused(base, workers) -> None:
+    with pytest.raises(ValueError, match="workers must be a whole number"):
+        run_sweep(base, {WIRE: [0.3]}, Counting(), workers=workers)
+
+
+def test_an_evaluation_other_processes_cannot_import_is_refused(base, tmp_path) -> None:
+    store = tmp_path / "sweep.jsonl"
+    evaluate = Counting(fail_when=lambda design: False)  # holds a lambda: cannot be sent
+    with pytest.raises(ValueError, match="top level of a module"):
+        run_sweep(base, {WIRE: [0.3, 0.4]}, evaluate, store=store, workers=2)
+    assert evaluate.calls == [] and not store.exists()
+    # One worker runs in this process and takes anything that can be called.
+    assert len(run_sweep(base, {WIRE: [0.3, 0.4]}, evaluate, workers=1).ok) == 2

@@ -13,18 +13,27 @@ stopped can be run again and skips the cases already done.
 
 The store is JSON Lines: a header naming the swept values and the base
 design, then one line per finished case.
+
+With ``workers`` above one, cases run at the same time in separate
+processes, each on one core. The cases are independent, so each gives the
+same result as in a serial run; only the order in which they finish, and so
+the order of the store's lines and of the progress lines, differs.
 """
 
 from __future__ import annotations
 
+import concurrent.futures
 import csv
 import dataclasses
 import hashlib
 import itertools
 import json
 import math
+import multiprocessing
 import os
+import pickle
 import time
+from concurrent.futures.process import BrokenProcessPool
 from pathlib import Path
 from typing import Any, Callable, Mapping, Sequence
 
@@ -59,6 +68,8 @@ class Sweep:
 
     parameters: tuple[str, ...]
     cases: tuple[CaseResult, ...]
+    wall: float = 0.0  # seconds from start to end of the run, s
+    workers: int = 1  # processes the cases ran in
 
     @property
     def ok(self) -> tuple[CaseResult, ...]:
@@ -103,7 +114,11 @@ class Sweep:
                 writer.writerow({key: "" if value is None else value for key, value in row.items()})
 
     def report(self) -> str:
-        """How many cases ran, failed or were taken from an earlier run, and the time taken."""
+        """How many cases ran, failed or were taken from an earlier run, and the time taken.
+
+        The case time is the sum of each case's own time; with several
+        workers the wall time is less, and their ratio is the speed-up.
+        """
         run = [case for case in self.cases if not case.resumed]
         seconds = sum(case.seconds for case in run)
         lines = [
@@ -112,6 +127,8 @@ class Sweep:
             f"  run now        {len(run):5d}  in {seconds:9.3f} s"
             + (f"  ({seconds / len(run):.3f} s a case)" if run else ""),
             f"  from the store {len(self.cases) - len(run):5d}",
+            f"  wall time            {self.wall:9.3f} s with {self.workers} "
+            + ("worker" if self.workers == 1 else "workers"),
         ]
         return "\n".join(lines)
 
@@ -146,8 +163,9 @@ def run_sweep(
     store: str | Path | None = None,
     retry_failed: bool = True,
     progress: Callable[[str], None] | None = None,
+    workers: int | None = 1,
 ) -> Sweep:
-    """Evaluate every combination of design values, one case at a time.
+    """Evaluate every combination of design values.
 
     ``values`` maps design-file paths (``"winding.wire_diameter_mm"``) to the
     values to try. ``evaluate`` is given each case's design and returns its
@@ -164,36 +182,131 @@ def run_sweep(
     are matched by their values. Progress, one line per case, goes to
     ``progress`` if given, for example ``print``.
 
+    ``workers`` is how many cases run at once, each in its own process; None
+    uses every core this process may use, counting logical cores, though
+    more workers than physical cores were found to gain nothing (see
+    docs/benchmarks.md). With more than one, ``evaluate``
+    must be a function defined at the top level of a module (or a
+    ``functools.partial`` of one), because each process imports it, and the
+    progress lines come in the order the cases finish. A case whose process
+    stops without an error (a crash in a compiled library) stops the pool:
+    that case and every case not finished by then are recorded as failed,
+    and running the sweep again with its store retries them.
+
     Raises ValueError, before any case is run, for a path the design does not
     have, a list that is empty, holds the same value twice or holds a value
-    that is not a single number, text, True/False or None, and for a store
-    made for another sweep or another base design.
+    that is not a single number, text, True/False or None, for a store made
+    for another sweep or another base design, for fewer than one worker, and
+    for an ``evaluate`` that cannot be sent to another process.
     """
+    began = time.perf_counter()
     parameters = tuple(values)
     _check_values(base, values)
+    workers = _check_workers(workers, evaluate)
     cases = sweep_cases(values)
     done: dict[str, CaseResult] = {}
-    writer = None
+    store_path = None
     if store is not None:
         done = _open_store(Path(store), parameters, base)
-        writer = Path(store)
+        store_path = Path(store)
 
-    results: list[CaseResult] = []
-    for number, case in enumerate(cases, start=1):
+    results: list[CaseResult | None] = [None] * len(cases)
+    to_run = []
+    finished = 0
+
+    def record(index: int, result: CaseResult, verdict: str) -> None:
+        nonlocal finished
+        results[index] = result
+        finished += 1
+        if progress is not None:
+            label = ", ".join(f"{path}={value!r}" for path, value in cases[index].items())
+            progress(f"case {finished}/{len(cases)} {verdict}: {label or 'base design'}")
+
+    for index, case in enumerate(cases):
         found = done.get(_key(case))
         if found is not None and (found.ok or not retry_failed):
-            result = dataclasses.replace(found, values=dict(case), resumed=True)
-            verdict = "from the store"
+            record(index, dataclasses.replace(found, values=dict(case), resumed=True), "from the store")
         else:
-            result = _run_case(base, case, evaluate)
-            if writer is not None:
-                _append(writer, result)
-            verdict = f"{result.status} in {result.seconds:.2f} s"
-        results.append(result)
-        if progress is not None:
-            label = ", ".join(f"{path}={value!r}" for path, value in case.items())
-            progress(f"case {number}/{len(cases)} {verdict}: {label or 'base design'}")
-    return Sweep(parameters=parameters, cases=tuple(results))
+            to_run.append(index)
+
+    def ran(index: int, result: CaseResult) -> None:
+        if store_path is not None:
+            _append(store_path, result)
+        record(index, result, f"{result.status} in {result.seconds:.2f} s")
+
+    workers = min(workers, max(len(to_run), 1))
+    if workers == 1:
+        for index in to_run:
+            ran(index, _run_case(base, cases[index], evaluate))
+    else:
+        _run_parallel(base, cases, to_run, evaluate, workers, ran)
+    return Sweep(
+        parameters=parameters,
+        cases=tuple(results),  # type: ignore[arg-type]  # every case is recorded
+        wall=time.perf_counter() - began,
+        workers=workers,
+    )
+
+
+def usable_cores() -> int:
+    """How many cores this process may run on."""
+    if hasattr(os, "process_cpu_count"):  # Python 3.13 and later
+        return os.process_cpu_count() or 1
+    if hasattr(os, "sched_getaffinity"):
+        return len(os.sched_getaffinity(0))
+    return os.cpu_count() or 1
+
+
+def _check_workers(workers: int | None, evaluate: Callable[..., Any]) -> int:
+    if workers is None:
+        workers = usable_cores()
+    if isinstance(workers, bool) or not isinstance(workers, int) or workers < 1:
+        raise ValueError(f"workers must be a whole number of at least 1, or None for every core, not {workers!r}")
+    if workers > 1:
+        try:
+            pickle.dumps(evaluate)
+        except Exception as error:
+            raise ValueError(
+                "with more than one worker, the evaluation must be a function defined at the top level "
+                f"of a module, so that each process can import it ({type(error).__name__}: {error})"
+            ) from None
+    return workers
+
+
+def _run_parallel(
+    base: Design,
+    cases: list[dict[str, Any]],
+    to_run: list[int],
+    evaluate: Callable[[Design], Mapping[str, Any]],
+    workers: int,
+    ran: Callable[[int, CaseResult], None],
+) -> None:
+    """Run cases in a pool of processes, handing each result to ``ran`` as it finishes."""
+    # Spawned, not forked, processes: the same on every system, and safe
+    # with libraries that hold threads, such as Gmsh.
+    context = multiprocessing.get_context("spawn")
+    pool = concurrent.futures.ProcessPoolExecutor(max_workers=workers, mp_context=context)
+    try:
+        futures = {pool.submit(_run_case, base, cases[index], evaluate): index for index in to_run}
+        for future in concurrent.futures.as_completed(futures):
+            index = futures[future]
+            try:
+                result = future.result()
+            except BrokenProcessPool as error:
+                result = CaseResult(
+                    values=dict(cases[index]),
+                    status="failed",
+                    results={},
+                    error=f"the worker process stopped while this case ran or waited ({type(error).__name__})",
+                    warnings=(),
+                    seconds=0.0,
+                )
+            ran(index, result)
+    except BaseException:
+        # An interrupt: the cases not started are dropped; those finished are stored.
+        pool.shutdown(wait=False, cancel_futures=True)
+        raise
+    pool.shutdown(wait=True)
 
 
 def _run_case(base: Design, case: Mapping[str, Any], evaluate: Callable[[Design], Mapping[str, Any]]) -> CaseResult:

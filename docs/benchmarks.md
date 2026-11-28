@@ -138,12 +138,45 @@ Neither side was tuned for the comparison. FEMM's mesh sizes are those of the FE
 (`polecraft.femm`); Pole-Craft's are its defaults, and its fine mesh is a smaller `size`
 (0.397) found only to match the node count.
 
+## Parallel sweeps
+
+`run_sweep(..., workers=N)` runs the cases of a sweep in N processes at once. Measured with
+[benchmarks/parallel_sweep.py](../benchmarks/parallel_sweep.py) on the machine above, results in
+[benchmarks/parallel_sweep.json](../benchmarks/parallel_sweep.json). The sweep is the reference design with 2
+placeholder magnets (remanence 1.2 and 1.4 T) by 8 wire sizes, 16 cases. Each case meshes the
+repeating slice and solves the torque at 48 rotor angles over one electrical cycle at 10 A peak.
+The times are the best of 2 runs, from the call to the returned results, including starting the processes.
+
+| Workers | Wall time (s) | Speed-up | Per worker | Same results as serial |
+|---:|---:|---:|---:|---|
+| 1 | 37.0 | 1.00 | 100% | yes |
+| 2 | 20.2 | 1.84 | 92% | yes |
+| 4 | 11.2 | 3.29 | 82% | yes |
+| 8 | 8.0 | 4.60 | 58% | yes |
+| 12 | 8.8 | 4.22 | 35% | yes |
+| 16 | 8.2 | 4.50 | 28% | yes |
+
+"Same results" means equal to the last digit, not just close: each case is solved by the same
+code in the same order wherever it runs.
+
+The speed-up stops at about 4.6, at 8 workers, the number of physical cores (the 16 logical cores are
+8 cores with two threads each). Each case also gets slower as workers are added: about 2.3 s with
+one worker and 3.3 s with 8, because the cores share memory bandwidth and run at a lower clock when all are busy.
+Beyond 8, each worker gets
+half a core. Setting the maths libraries to one thread a process (`OPENBLAS_NUM_THREADS=1`, `OMP_NUM_THREADS=1`)
+did not help: 9.8 s at 8 workers. Starting 8 processes and importing Pole-Craft
+took 0.5 s (a sweep of 8 cases that need no field solve), so short sweeps gain less. On this machine, use
+as many workers as physical cores; `workers=None` takes every logical core, which here is no faster.
+
 ## Repeating it
 
 ```
 pip install -e ".[dev,mesh]"
 python benchmarks/femm_comparison.py
+python benchmarks/parallel_sweep.py
 ```
+
+The parallel sweep timing takes about 3 minutes and overwrites `benchmarks/parallel_sweep.json`.
 
 It takes about 40 minutes, nearly all of it FEMM. Do not use the computer for anything else
 meanwhile. It overwrites `benchmarks/baseline.json`. To time Pole-Craft alone, from Python:

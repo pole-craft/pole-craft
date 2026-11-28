@@ -1,0 +1,93 @@
+{
+ "date": "2026-11-27",
+ "machine": {
+  "cpu": "AMD Ryzen 9 5900HX with Radeon Graphics",
+  "logical_cores": 16,
+  "ram_gb": 31.4,
+  "os": "Windows-10-10.0.26300-SP0",
+  "python": "3.11.5",
+  "numpy": "2.4.6",
+  "scipy": "1.17.1",
+  "gmsh": "4.15.2",
+  "polecraft": "0.0.5"
+ },
+ "usable_cores": 16,
+ "design": "designs/qdd_outer_36s42p.yaml",
+ "cases": 16,
+ "angles_per_case": 48,
+ "repeats": 2,
+ "runs": [
+  {
+   "workers": 1,
+   "wall": 36.9984985999763,
+   "walls": [
+    38.04381059994921,
+    36.9984985999763
+   ],
+   "case_seconds": 36.99804310023319,
+   "same_as_serial": true,
+   "speed_up": 1.0,
+   "efficiency": 1.0
+  },
+  {
+   "workers": 2,
+   "wall": 20.158840500051156,
+   "walls": [
+    20.5407516999403,
+    20.158840500051156
+   ],
+   "case_seconds": 38.24155340017751,
+   "same_as_serial": true,
+   "speed_up": 1.8353485459584054,
+   "efficiency": 0.9176742729792027
+  },
+  {
+   "workers": 4,
+   "wall": 11.249080499983393,
+   "walls": [
+    11.34439610003028,
+    11.249080499983393
+   ],
+   "case_seconds": 40.56433300010394,
+   "same_as_serial": true,
+   "speed_up": 3.289024254029556,
+   "efficiency": 0.822256063507389
+  },
+  {
+   "workers": 8,
+   "wall": 8.036637300043367,
+   "walls": [
+    8.045062600052916,
+    8.036637300043367
+   ],
+   "case_seconds": 52.7520738998428,
+   "same_as_serial": true,
+   "speed_up": 4.6037288008227835,
+   "efficiency": 0.5754661001028479
+  },
+  {
+   "workers": 12,
+   "wall": 8.770238899975084,
+   "walls": [
+    8.770238899975084,
+    8.799203000031412
+   ],
+   "case_seconds": 62.600842799874954,
+   "same_as_serial": true,
+   "speed_up": 4.218642048631242,
+   "efficiency": 0.3515535040526035
+  },
+  {
+   "workers": 16,
+   "wall": 8.217189999995753,
+   "walls": [
+    8.217189999995753,
+    8.644437300041318
+   ],
+   "case_seconds": 89.88595139980316,
+   "same_as_serial": true,
+   "speed_up": 4.502573093721263,
+   "efficiency": 0.2814108183575789
+  }
+ ]
+}
